@@ -1162,6 +1162,7 @@ async def undo_last_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 }
             }
         }]
+
         
         sheet.batchUpdate(
             spreadsheetId=SPREADSHEET_ID,
@@ -1355,13 +1356,6 @@ async def mark_as_ignored_callback(update: Update, context: ContextTypes.DEFAULT
             return
         
         # Шукаємо запис для позначення
-        user_name = user.username or user.first_name or "Unknown"
-        row_to_update = None
-        
-        for i, row in enumerate(values):
-            if len(row) >= 4:
-                if (row[0] == last_
-                # Шукаємо запис для позначення
         user_name = user.username or user.first_name or "Unknown"
         row_to_update = None
         
