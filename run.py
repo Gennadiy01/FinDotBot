@@ -1,139 +1,108 @@
-# run.py - виправлено для Render
+# run.py - виправлена версія для Render
 import asyncio
 import logging
 import sys
 import os
-from aiohttp import web
 import signal
+
+# Додаємо поточну директорію до шляху
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from finedot_bot import main
+from config import HEALTH_CHECK_PORT, LOG_LEVEL
+from aiohttp import web
 
 # Налаштування логування
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    handlers=[logging.StreamHandler(sys.stdout)]
+    level=getattr(logging, LOG_LEVEL.upper()),
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
 )
 
 logger = logging.getLogger(__name__)
 
-class BotRunner:
-    def __init__(self):
-        self.bot_task = None
-        self.web_app = None
-        self.runner = None
-        self.site = None
-        self.shutdown_event = asyncio.Event()
+# Глобальна змінна для веб-додатку
+app = None
+runner = None
+site = None
 
-    async def health_handler(self, request):
-        """Health check endpoint"""
-        return web.Response(text="FinDotBot is running!", status=200)
+async def health_handler(request):
+    """Health check endpoint"""
+    return web.json_response({
+        "status": "healthy",
+        "service": "FinDotBot",
+        "timestamp": asyncio.get_event_loop().time()
+    })
 
-    async def start_web_server(self):
-        """Запуск веб-сервера для health check"""
-        self.web_app = web.Application()
-        self.web_app.router.add_get('/health', self.health_handler)
-        self.web_app.router.add_get('/', self.health_handler)
-        
-        self.runner = web.AppRunner(self.web_app)
-        await self.runner.setup()
-        
-        port = int(os.environ.get('PORT', 10000))
-        self.site = web.TCPSite(self.runner, '0.0.0.0', port)
-        await self.site.start()
-        
-        logger.info(f"Health check сервер запущено на порту {port}")
-
-    async def start_bot(self):
-        """Запуск Telegram бота"""
-        try:
-            from finedot_bot import main as bot_main
-            await bot_main()
-        except Exception as e:
-            logger.error(f"Помилка запуску бота: {e}")
-            raise
-
-    async def run(self):
-        """Головна функція запуску"""
-        try:
-            logger.info("🚀 Запуск FinDotBot з health check...")
-            
-            # Запускаємо веб-сервер
-            await self.start_web_server()
-            
-            # Запускаємо бота в окремому таску
-            self.bot_task = asyncio.create_task(self.start_bot())
-            
-            # Чекаємо завершення або сигнал
-            try:
-                await asyncio.wait_for(self.shutdown_event.wait(), timeout=None)
-            except asyncio.CancelledError:
-                pass
-            
-        except Exception as e:
-            logger.error(f"💥 Критична помилка: {e}")
-            raise
-        finally:
-            await self.cleanup()
-
-    async def cleanup(self):
-        """Очищення ресурсів"""
-        logger.info("Зупинка сервісів...")
-        
-        # Зупиняємо бота
-        if self.bot_task and not self.bot_task.done():
-            self.bot_task.cancel()
-            try:
-                await asyncio.wait_for(self.bot_task, timeout=5.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
-        
-        # Зупиняємо веб-сервер
-        if self.runner:
-            await self.runner.cleanup()
-        
-        logger.info("Всі сервіси зупинено")
-
-    def signal_handler(self, signum, frame):
-        """Обробник сигналів"""
-        logger.info(f"Отримано сигнал {signum}. Зупиняємо...")
-        self.shutdown_event.set()
-
-def main():
-    """Простий запуск без зайвих ускладнень"""
+async def start_health_server():
+    """Запуск health check сервера"""
+    global app, runner, site
+    
     try:
-        # Перевіряємо конфігурацію
-        try:
-            from config import SERVICE_ACCOUNT_FILE, TOKEN
-            
-            if not os.path.exists(SERVICE_ACCOUNT_FILE):
-                logger.warning(f"Service account файл не знайдено: {SERVICE_ACCOUNT_FILE}")
-            
-            if not TOKEN or TOKEN == 'ваш_telegram_bot_token':
-                logger.warning("TOKEN може бути не встановлено")
-                
-        except ImportError as e:
-            logger.error(f"Помилка імпорту config: {e}")
+        app = web.Application()
+        app.router.add_get('/health', health_handler)
+        app.router.add_get('/', health_handler)
         
-        # Створюємо і запускаємо бота
-        runner = BotRunner()
+        runner = web.AppRunner(app)
+        await runner.setup()
         
-        # Налаштовуємо обробники сигналів
-        if hasattr(signal, 'SIGTERM'):
-            signal.signal(signal.SIGTERM, runner.signal_handler)
-        if hasattr(signal, 'SIGINT'):
-            signal.signal(signal.SIGINT, runner.signal_handler)
+        site = web.TCPSite(runner, '0.0.0.0', HEALTH_CHECK_PORT)
+        await site.start()
         
-        # Запускаємо event loop
-        try:
-            asyncio.run(runner.run())
-        except KeyboardInterrupt:
-            logger.info("🛑 Бот зупинено користувачем")
-        except Exception as e:
-            logger.error(f"💥 Фатальна помилка: {e}")
-            sys.exit(1)
+        logger.info(f"Health check сервер запущено на порту {HEALTH_CHECK_PORT}")
         
     except Exception as e:
-        logger.error(f"💥 Помилка ініціалізації: {e}")
-        sys.exit(1)
+        logger.error(f"Помилка запуску health check сервера: {e}")
+
+async def stop_health_server():
+    """Зупинка health check сервера"""
+    global app, runner, site
+    
+    try:
+        if site:
+            await site.stop()
+        if runner:
+            await runner.cleanup()
+        logger.info("Health check сервер зупинено")
+    except Exception as e:
+        logger.error(f"Помилка зупинки health check сервера: {e}")
+
+async def run_bot():
+    """Основна функція запуску"""
+    try:
+        # Запускаємо health check сервер
+        logger.info(f"Запуск health check сервера на порту {HEALTH_CHECK_PORT}")
+        await start_health_server()
+        
+        # Запускаємо основного бота
+        logger.info("Запуск FinDotBot...")
+        await main()
+        
+    except KeyboardInterrupt:
+        logger.info("Отримано сигнал переривання, зупинка бота...")
+    except Exception as e:
+        logger.error(f"Критична помилка: {e}")
+        raise
+    finally:
+        await stop_health_server()
+        logger.info("FinDotBot зупинено")
+
+def signal_handler(signum, frame):
+    """Обробник сигналів для graceful shutdown"""
+    logger.info(f"Отримано сигнал {signum}, зупинка...")
+    raise KeyboardInterrupt()
 
 if __name__ == '__main__':
-    main()
+    # Встановлюємо обробники сигналів
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    try:
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        logger.info("Програма перервана користувачем")
+    except Exception as e:
+        logger.error(f"Фатальна помилка: {e}")
+        sys.exit(1)

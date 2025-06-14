@@ -1,709 +1,4 @@
-for i, row in enumerate(values):
-            if len(row) >= 4:
-                if (row[0] == last_action['date'] and
-                    row[1] == last_action['category'] and
-                    float(row[2]) == last_action['amount'] and
-                    row[3] == user_name):
-                    row_to_update = i + 1
-                    break
-
-        if row_to_update is None:
-            await update.callback_query.edit_message_text("❌ Запис не знайдено для позначення.")
-            return
-        
-        # Додаємо префікс [IGNORED] до коментаря
-        current_comment = last_action.get('comment', '')
-        new_comment = f"[IGNORED] {current_comment}".strip()
-        
-        # Оновлюємо коментар
-        range_to_update = f"'Аркуш1'!E{row_to_update}"
-        sheet.values().update(
-            spreadsheetId=SPREADSHEET_ID,
-            range=range_to_update,
-            valueInputOption='USER_ENTERED',
-            body={'values': [[new_comment]]}
-        ).execute()
-        
-        # Видаляємо з кешу
-        del user_last_actions[user.id]
-        
-        await update.callback_query.edit_message_text(
-            f"🔕 **Запис ігноровано!**\n\n"
-            f"📂 Категорія: {last_action['category']}\n"
-            f"💰 Сума: {last_action['amount']:.2f} грн\n"
-            f"💡 Не буде враховуватись у статистиці",
-            parse_mode='Markdown'
-        )
-        
-    except Exception as e:
-        logger.error(f"Помилка позначення: {e}")
-        await update.callback_query.edit_message_text("❌ Помилка при позначенні запису.")
-
-async def show_recent_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показує останні 5 записів користувача"""
-    user = update.message.from_user
-    user_name = user.username or user.first_name or "Unknown"
-    
-    try:
-        # Отримуємо всі записи
-        result = sheet.values().get(
-            spreadsheetId=SPREADSHEET_ID,
-            range=RANGE_NAME
-        ).execute()
-        
-        values = result.get('values', [])
-        if not values:
-            await update.message.reply_text("❌ Немає записів.")
-            return
-        
-        # Фільтруємо записи користувача
-        user_expenses = []
-        for i, row in enumerate(values[1:], 2):  # Починаємо з 2-го рядка
-            if len(row) >= 4 and row[3] == user_name:
-                try:
-                    date_obj = datetime.datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
-                    user_expenses.append({
-                        'row': i,
-                        'date': date_obj,
-                        'category': row[1],
-                        'amount': float(row[2]),
-                        'comment': row[4] if len(row) > 4 else "",
-                        'is_ignored': len(row) > 4 and '[IGNORED]' in row[4]
-                    })
-                except (ValueError, IndexError):
-                    continue
-        
-        if not user_expenses:
-            await update.message.reply_text("❌ У вас немає записів.")
-            return
-        
-        # Сортуємо за датою (найновіші спочатку) і беремо останні 5
-        user_expenses.sort(key=lambda x: x['date'], reverse=True)
-        recent_expenses = user_expenses[:5]
-        
-        message = "📝 Ваші останні записи:\n\n"
-        for i, exp in enumerate(recent_expenses, 1):
-            ignored_mark = "🔕 " if exp['is_ignored'] else ""
-            message += f"{i}. {ignored_mark}{exp['category']}: {exp['amount']:.2f} грн"
-            if exp['comment'] and not exp['is_ignored']:
-                clean_comment = exp['comment'].replace('[IGNORED]', '').strip()
-                if clean_comment:
-                    message += f" ({clean_comment})"
-            message += f"\n   📅 {exp['date'].strftime('%d.%m %H:%M')}\n\n"
-        
-        message += "💡 Використайте кнопку 'Управління' для додаткових дій"
-        
-        await update.message.reply_text(message)
-        
-    except Exception as e:
-        logger.error(f"Помилка отримання записів: {e}")
-        await update.message.reply_text("❌ Помилка при отриманні записів.")
-
-async def compare_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Порівняння витрат між користувачами за місяць"""
-    expenses = get_all_expenses()
-    filtered_expenses = filter_expenses_by_period(expenses, "month")
-    
-    if not filtered_expenses:
-        await update.message.reply_text("Немає витрат за поточний місяць.")
-        return
-    
-    # Збираємо статистику по користувачах
-    users_stats = {}
-    total_amount = 0
-    
-    for exp in filtered_expenses:
-        user = exp['user']
-        if user not in users_stats:
-            users_stats[user] = {
-                'total': 0,
-                'count': 0,
-                'categories': {}
-            }
-        
-        users_stats[user]['total'] += exp['amount']
-        users_stats[user]['count'] += 1
-        total_amount += exp['amount']
-        
-        category = exp['category']
-        if category not in users_stats[user]['categories']:
-            users_stats[user]['categories'][category] = 0
-        users_stats[user]['categories'][category] += exp['amount']
-    
-    # Формуємо повідомлення
-    message = "👫 Порівняння витрат за місяць:\n\n"
-    message += f"💰 Загальний бюджет сім'ї: {total_amount:.2f} грн\n\n"
-    
-    # Сортуємо користувачів за сумою витрат
-    sorted_users = sorted(users_stats.items(), key=lambda x: x[1]['total'], reverse=True)
-    
-    for i, (user, stats) in enumerate(sorted_users, 1):
-        percentage = (stats['total'] / total_amount) * 100
-        avg_expense = stats['total'] / stats['count']
-        
-        message += f"{i}. 👤 {user}:\n"
-        message += f"   💰 {stats['total']:.2f} грн ({percentage:.1f}%)\n"
-        message += f"   📝 {stats['count']} записів\n"
-        message += f"   📊 Середня витрата: {avg_expense:.2f} грн\n"
-        
-        # Топ-3 категорії користувача
-        top_categories = sorted(stats['categories'].items(), key=lambda x: x[1], reverse=True)[:3]
-        message += "   🏆 Топ категорії: "
-        message += ", ".join([f"{cat} ({amt:.0f}₴)" for cat, amt in top_categories])
-        message += "\n\n"
-    
-    await update.message.reply_text(message)
-
-async def compare_users_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback версія порівняння користувачів"""
-    expenses = get_all_expenses()
-    filtered_expenses = filter_expenses_by_period(expenses, "month")
-    
-    if not filtered_expenses:
-        await update.callback_query.edit_message_text("Немає витрат за поточний місяць.")
-        return
-    
-    # Збираємо статистику по користувачах
-    users_stats = {}
-    total_amount = 0
-    
-    for exp in filtered_expenses:
-        user = exp['user']
-        if user not in users_stats:
-            users_stats[user] = {
-                'total': 0,
-                'count': 0,
-                'categories': {}
-            }
-        
-        users_stats[user]['total'] += exp['amount']
-        users_stats[user]['count'] += 1
-        total_amount += exp['amount']
-        
-        category = exp['category']
-        if category not in users_stats[user]['categories']:
-            users_stats[user]['categories'][category] = 0
-        users_stats[user]['categories'][category] += exp['amount']
-    
-    # Формуємо повідомлення
-    message = "👫 **Порівняння витрат за місяць:**\n\n"
-    message += f"💰 Загальний бюджет: {total_amount:.2f} грн\n\n"
-    
-    # Сортуємо користувачів за сумою витрат
-    sorted_users = sorted(users_stats.items(), key=lambda x: x[1]['total'], reverse=True)
-    
-    for i, (user, stats) in enumerate(sorted_users, 1):
-        percentage = (stats['total'] / total_amount) * 100
-        avg_expense = stats['total'] / stats['count']
-        
-        message += f"**{i}. 👤 {user}:**\n"
-        message += f"💰 {stats['total']:.2f} грн ({percentage:.1f}%)\n"
-        message += f"📝 {stats['count']} записів\n"
-        message += f"📊 Середня: {avg_expense:.2f} грн\n"
-        
-        # Топ категорія користувача
-        top_category = max(stats['categories'].items(), key=lambda x: x[1])
-        message += f"🏆 Топ: {top_category[0]} ({top_category[1]:.0f}₴)\n\n"
-    
-    await update.callback_query.edit_message_text(message, parse_mode='Markdown')
-
-async def family_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сімейний бюджет з детальною розбивкою"""
-    expenses = get_all_expenses()
-    
-    # Статистика за тиждень
-    week_expenses = filter_expenses_by_period(expenses, "week")
-    week_total = sum(exp['amount'] for exp in week_expenses)
-    
-    # Статистика за місяць
-    month_expenses = filter_expenses_by_period(expenses, "month")
-    month_total = sum(exp['amount'] for exp in month_expenses)
-    
-    if not month_expenses:
-        await update.message.reply_text("Немає витрат за поточний місяць.")
-        return
-    
-    # По користувачах за місяць
-    users_month = {}
-    for exp in month_expenses:
-        user = exp['user']
-        users_month[user] = users_month.get(user, 0) + exp['amount']
-    
-    # По категоріях за місяць
-    categories_month = {}
-    for exp in month_expenses:
-        category = exp['category']
-        categories_month[category] = categories_month.get(category, 0) + exp['amount']
-    
-    # Формуємо звіт
-    message = "💼 Сімейний бюджет:\n\n"
-    
-    message += f"📅 За тиждень: {week_total:.2f} грн\n"
-    message += f"📅 За місяць: {month_total:.2f} грн\n"
-    
-    if week_total > 0:
-        projected_month = (week_total / 7) * 30
-        message += f"📈 Прогноз на місяць: {projected_month:.2f} грн\n"
-    
-    message += "\n👥 Розподіл по сім'ї:\n"
-    for user, amount in sorted(users_month.items(), key=lambda x: x[1], reverse=True):
-        percentage = (amount / month_total) * 100
-        message += f"• {user}: {amount:.2f} грн ({percentage:.1f}%)\n"
-    
-    message += "\n📂 Основні категорії:\n"
-    for category, amount in sorted(categories_month.items(), key=lambda x: x[1], reverse=True)[:5]:
-        percentage = (amount / month_total) * 100
-        message += f"• {category}: {amount:.2f} грн ({percentage:.1f}%)\n"
-    
-    await update.message.reply_text(message)
-
-async def who_spent_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Хто більше витратив за період"""
-    # Отримуємо параметр періоду з команди
-    period = "month"  # За замовчуванням місяць
-    
-    if context.args:
-        period_arg = context.args[0].lower()
-        if period_arg in ["today", "week", "month", "year"]:
-            period = period_arg if period_arg != "today" else "day"
-    
-    expenses = get_all_expenses()
-    filtered_expenses = filter_expenses_by_period(expenses, period)
-    
-    if not filtered_expenses:
-        period_names = {"day": "сьогодні", "week": "тиждень", "month": "місяць", "year": "рік"}
-        await update.message.reply_text(f"Немає витрат за {period_names.get(period, period)}.")
-        return
-    
-    # Рахуємо по користувачах
-    users = {}
-    for exp in filtered_expenses:
-        user = exp['user']
-        users[user] = users.get(user, 0) + exp['amount']
-    
-    if len(users) < 2:
-        await update.message.reply_text("Потрібно мінімум 2 користувачі для порівняння.")
-        return
-    
-    # Сортуємо користувачів
-    sorted_users = sorted(users.items(), key=lambda x: x[1], reverse=True)
-    total = sum(users.values())
-    
-    period_names = {"day": "сьогодні", "week": "цього тижня", "month": "цього місяця", "year": "цього року"}
-    period_name = period_names.get(period, period)
-    
-    message = f"🏆 Рейтинг витрат {period_name}:\n\n"
-    
-    for i, (user, amount) in enumerate(sorted_users, 1):
-        percentage = (amount / total) * 100
-        emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
-        message += f"{emoji} {user}: {amount:.2f} грн ({percentage:.1f}%)\n"
-    
-    # Додаємо різницю між першим і другим
-    if len(sorted_users) >= 2:
-        difference = sorted_users[0][1] - sorted_users[1][1]
-        message += f"\n💸 Різниця: {difference:.2f} грн"
-        
-        if difference > 0:
-            message += f"\n💡 {sorted_users[0][0]} витратив більше на {difference:.2f} грн"
-    
-    await update.message.reply_text(message)
-
-async def who_spent_more_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback версія рейтингу витрат"""
-    expenses = get_all_expenses()
-    filtered_expenses = filter_expenses_by_period(expenses, "month")
-    
-    if not filtered_expenses:
-        await update.callback_query.edit_message_text("Немає витрат за поточний місяць.")
-        return
-    
-    # Рахуємо по користувачах
-    users = {}
-    for exp in filtered_expenses:
-        user = exp['user']
-        users[user] = users.get(user, 0) + exp['amount']
-    
-    if len(users) < 2:
-        await update.callback_query.edit_message_text("Потрібно мінімум 2 користувачі для порівняння.")
-        return
-    
-    # Сортуємо користувачів
-    sorted_users = sorted(users.items(), key=lambda x: x[1], reverse=True)
-    total = sum(users.values())
-    
-    message = f"🏆 **Рейтинг витрат за місяць:**\n\n"
-    
-    for i, (user, amount) in enumerate(sorted_users, 1):
-        percentage = (amount / total) * 100
-        emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
-        message += f"{emoji} **{user}**: {amount:.2f} грн ({percentage:.1f}%)\n"
-    
-    # Додаємо різницю між першим і другим
-    if len(sorted_users) >= 2:
-        difference = sorted_users[0][1] - sorted_users[1][1]
-        message += f"\n💡 Різниця: {difference:.2f} грн"
-    
-    await update.callback_query.edit_message_text(message, parse_mode='Markdown')
-
-async def set_family_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Встановлення сімейного бюджету"""
-    global family_budget_amount
-    
-    if not context.args:
-        await update.message.reply_text(
-            "💰 Встановіть сімейний бюджет:\n"
-            "/budget 15000 - встановити бюджет 15000 грн на місяць\n"
-            "/budget - подивитись поточний бюджет"
-        )
-        return
-    
-    try:
-        budget_amount = float(context.args[0])
-        family_budget_amount = budget_amount
-        
-        await update.message.reply_text(
-            f"💰 Сімейний бюджет встановлено: {budget_amount:.2f} грн на місяць\n"
-            f"💡 Використайте кнопку 'Статус бюджету' для перевірки виконання"
-        )
-        
-    except ValueError:
-        await update.message.reply_text("❌ Введіть коректну суму. Приклад: /budget 15000")
-
-async def budget_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Статус виконання сімейного бюджету"""
-    global family_budget_amount
-    
-    if family_budget_amount == 0:
-        await update.message.reply_text(
-            "❌ Бюджет не встановлено.\n"
-            "Використайте /budget СУМА для встановлення бюджету."
-        )
-        return
-    
-    expenses = get_all_expenses()
-    month_expenses = filter_expenses_by_period(expenses, "month")
-    spent = sum(exp['amount'] for exp in month_expenses)
-    
-    remaining = family_budget_amount - spent
-    percentage = (spent / family_budget_amount) * 100
-    
-    message = f"💰 Статус сімейного бюджету:\n\n"
-    message += f"📊 Бюджет на місяць: {family_budget_amount:.2f} грн\n"
-    message += f"💸 Витрачено: {spent:.2f} грн ({percentage:.1f}%)\n"
-    
-    if remaining > 0:
-        message += f"✅ Залишилось: {remaining:.2f} грн\n"
-        
-        # Розрахунок денного бюджету
-        import calendar
-        now = datetime.datetime.now()
-        days_in_month = calendar.monthrange(now.year, now.month)[1]
-        days_passed = now.day
-        days_remaining = days_in_month - days_passed
-        
-        if days_remaining > 0:
-            daily_budget = remaining / days_remaining
-            message += f"📅 Можна витрачати {daily_budget:.2f} грн на день\n"
-    else:
-        message += f"⚠️ Перевищення бюджету: {abs(remaining):.2f} грн\n"
-    
-    # Прогрес бар
-    progress_length = 10
-    filled_length = int(progress_length * percentage / 100)
-    bar = "█" * filled_length + "░" * (progress_length - filled_length)
-    message += f"\n📊 Прогрес: {bar} {percentage:.1f}%"
-    
-    await update.message.reply_text(message)
-
-async def budget_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback версія статусу бюджету"""
-    global family_budget_amount
-    
-    if family_budget_amount == 0:
-        await update.callback_query.edit_message_text(
-            "❌ **Бюджет не встановлено**\n\n"
-            "Використайте /budget СУМА для встановлення бюджету.",
-            parse_mode='Markdown'
-        )
-        return
-    
-    expenses = get_all_expenses()
-    month_expenses = filter_expenses_by_period(expenses, "month")
-    spent = sum(exp['amount'] for exp in month_expenses)
-    
-    remaining = family_budget_amount - spent
-    percentage = (spent / family_budget_amount) * 100
-    
-    message = f"💰 **Статус сімейного бюджету:**\n\n"
-    message += f"📊 Бюджет: {family_budget_amount:.2f} грн\n"
-    message += f"💸 Витрачено: {spent:.2f} грн ({percentage:.1f}%)\n"
-    
-    if remaining > 0:
-        message += f"✅ Залишилось: {remaining:.2f} грн\n"
-        
-        # Розрахунок денного бюджету
-        import calendar
-        now = datetime.datetime.now()
-        days_in_month = calendar.monthrange(now.year, now.month)[1]
-        days_passed = now.day
-        days_remaining = days_in_month - days_passed
-        
-        if days_remaining > 0:
-            daily_budget = remaining / days_remaining
-            message += f"📅 Денний ліміт: {daily_budget:.2f} грн"
-    else:
-        message += f"⚠️ Перевищення: {abs(remaining):.2f} грн"
-    
-    # Прогрес бар
-    progress_length = 10
-    filled_length = int(progress_length * percentage / 100)
-    bar = "█" * filled_length + "░" * (progress_length - filled_length)
-    message += f"\n\n📊 [{bar}] {percentage:.1f}%"
-    
-    await update.callback_query.edit_message_text(message, parse_mode='Markdown')
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    user = update.message.from_user
-    await process_and_save(text, user, update)
-
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    voice = update.message.voice
-    
-    # Перевіряємо чи доступний FFmpeg
-    if FFMPEG_PATH is None:
-        await update.message.reply_text(
-            "❌ Обробка голосових повідомлень недоступна.\n"
-            "FFmpeg не встановлено. Використовуйте текстові повідомлення."
-        )
-        return
-    
-    # Перевіряємо тривалість голосового повідомлення
-    if voice.duration > MAX_VOICE_DURATION:
-        await update.message.reply_text(
-            f"❌ Голосове повідомлення занадто довге. Максимальна тривалість: {MAX_VOICE_DURATION} секунд."
-        )
-        return
-    
-    # Відправляємо повідомлення про початок обробки
-    processing_message = await update.message.reply_text("🎤 Обробляю голосове повідомлення...")
-    
-    try:
-        # Завантажуємо голосове повідомлення
-        file = await context.bot.get_file(voice.file_id)
-        
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tf_ogg:
-            await file.download_to_drive(custom_path=tf_ogg.name)
-            ogg_path = tf_ogg.name
-
-        # Конвертуємо OGG у WAV
-        wav_path = ogg_path.replace(".ogg", ".wav")
-        
-        try:
-            subprocess.run([
-                FFMPEG_PATH, "-i", ogg_path, "-ar", "16000", "-ac", "1", wav_path, "-y"
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except subprocess.CalledProcessError as e:
-            await processing_message.edit_text("❌ Помилка конвертації аудіо.")
-            logger.error(f"ffmpeg error: {e}")
-            os.unlink(ogg_path)
-            return
-        
-        os.unlink(ogg_path)
-
-        # Читаємо WAV файл
-        with open(wav_path, "rb") as audio_file:
-            content = audio_file.read()
-        os.unlink(wav_path)
-
-        # Налаштування для розпізнавання мови
-        audio = speech.RecognitionAudio(content=content)
-        config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=16000,
-            language_code=SPEECH_LANGUAGE,
-            enable_automatic_punctuation=True,
-            enable_word_time_offsets=False
-        )
-
-        # Розпізнаємо мову
-        response = speech_client.recognize(config=config, audio=audio)
-        
-        if not response.results:
-            await processing_message.edit_text("❌ Не вдалося розпізнати голосове повідомлення. Спробуйте говорити чіткіше.")
-            return
-        
-        recognized_text = response.results[0].alternatives[0].transcript
-        confidence = response.results[0].alternatives[0].confidence
-        
-        logger.info(f"Розпізнано: '{recognized_text}' (впевненість: {confidence:.2f})")
-        
-        # Видаляємо повідомлення про обробку
-        await processing_message.delete()
-        
-        # Показуємо розпізнаний текст користувачу
-        await update.message.reply_text(f"🎤 Розпізнано: \"{recognized_text}\"")
-        
-        # Обробляємо розпізнаний текст
-        await process_and_save(recognized_text, user, update)
-        
-    except Exception as e:
-        logger.error(f"Google Speech-to-Text error: {e}")
-        await processing_message.edit_text("❌ Помилка при розпізнаванні голосу. Спробуйте пізніше.")
-
-def parse_expense_text(text):
-    """Розбирає текст витрати з підтримкою різних форматів"""
-    text = text.strip()
-    
-    parts = text.split(maxsplit=2)
-    if len(parts) >= 2:
-        category = parts[0]
-        amount_str = parts[1]
-        comment = parts[2] if len(parts) == 3 else ""
-        
-        amount_match = re.search(r'(\d+(?:[.,]\d+)?)', amount_str)
-        if amount_match:
-            amount_str = amount_match.group(1).replace(',', '.')
-            try:
-                amount = float(amount_str)
-                return category, amount, comment
-            except ValueError:
-                pass
-    
-    return None, None, None
-
-async def process_and_save(text, user, update):
-    """Обробляє та зберігає витрату"""
-    category, amount, comment = parse_expense_text(text)
-    
-    if category is None or amount is None:
-        await update.message.reply_text(
-            "❌ Невірний формат. Введи у форматі:\n"
-            "Категорія Сума Коментар\n"
-            "Приклад: Їжа 250 Обід"
-        )
-        return
-
-    if amount <= 0:
-        await update.message.reply_text("❌ Сума має бути більше нуля.")
-        return
-
-    date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    user_name = user.username or user.first_name or "Unknown"
-
-    values = [[date_str, category, amount, user_name, comment]]
-
-    try:
-        result = sheet.values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range=RANGE_NAME,
-            valueInputOption='USER_ENTERED',
-            body={'values': values}
-        ).execute()
-        
-        user_last_actions[user.id] = {
-            'action': 'add',
-            'date': date_str,
-            'category': category,
-            'amount': amount,
-            'comment': comment,
-            'row_range': result.get('updates', {}).get('updatedRange', ''),
-            'timestamp': datetime.datetime.now()
-        }
-        
-        success_message = (
-            f"✅ Запис додано:\n"
-            f"📂 Категорія: {category}\n"
-            f"💰 Сума: {amount:.2f} грн\n"
-            f"👤 Користувач: {user_name}"
-        )
-        if comment:
-            success_message += f"\n💬 Коментар: {comment}"
-        
-        success_message += f"\n\n💡 Використайте кнопку 'Управління' для додаткових дій"
-            
-        await update.message.reply_text(success_message)
-        
-    except Exception as e:
-        logger.error(f"Детальна помилка при записі до Google Sheets: {e}")
-        await update.message.reply_text("❌ Виникла помилка при записі даних. Перевірте доступ до таблиці.")
-
-def test_sheets_access():
-    """Тестує доступ до Google Sheets"""
-    try:
-        result = sheet.values().get(
-            spreadsheetId=SPREADSHEET_ID,
-            range="A1:A1"
-        ).execute()
-        logger.info("✅ Доступ до Google Sheets працює")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Помилка доступу до Google Sheets: {e}")
-        return False
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обробник помилок"""
-    logger.error(f'Update {update} caused error {context.error}')
-
-# СПРОЩЕНА ФУНКЦІЯ MAIN БЕЗ ВЛАСНОГО EVENT LOOP
-async def main():
-    """Запускає бота БЕЗ власного event loop"""
-    if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        logger.error(f"Файл сервісного акаунту не знайдено: {SERVICE_ACCOUNT_FILE}")
-        return
-    
-    # Тестуємо доступ до Google Sheets
-    try:
-        test_sheets_access()
-    except Exception as e:
-        logger.error(f"Не вдалося протестувати доступ до Google Sheets: {e}")
-    
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    # Додаємо обробники команд
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("today", stats_today))
-    app.add_handler(CommandHandler("week", stats_week))
-    app.add_handler(CommandHandler("month", stats_month))
-    app.add_handler(CommandHandler("year", stats_year))
-    app.add_handler(CommandHandler("mystats", my_stats))
-    app.add_handler(CommandHandler("top", top_categories))
-    
-    # КОМАНДИ управління записами
-    app.add_handler(CommandHandler("undo", undo_last_action))
-    app.add_handler(CommandHandler("ignore", mark_as_ignored))
-    app.add_handler(CommandHandler("recent", show_recent_expenses))
-    
-    # НОВІ КОМАНДИ для пар
-    app.add_handler(CommandHandler("compare", compare_users))
-    app.add_handler(CommandHandler("family", family_budget))
-    app.add_handler(CommandHandler("whospent", who_spent_more))
-    app.add_handler(CommandHandler("budget", set_family_budget))
-    app.add_handler(CommandHandler("budget_status", budget_status))
-    
-    # НОВІ ОБРОБНИКИ для кнопок
-    app.add_handler(CallbackQueryHandler(handle_callback_query))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_text))
-    
-    # Обробники голосових повідомлень
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    
-    # Додаємо обробник помилок
-    app.add_error_handler(error_handler)
-
-    logger.info("Бот запускається...")
-    if FFMPEG_PATH:
-        logger.info("Голосові повідомлення увімкнені")
-    else:
-        logger.warning("Голосові повідомлення вимкнені (FFmpeg не знайдено)")
-    
-    # ПРОСТИЙ ЗАПУСК БЕЗ ВЛАСНОГО EVENT LOOP
-    logger.info("✅ FinDotBot з кнопками успішно запущено!")
-    await app.run_polling()import logging
+import logging
 import datetime
 import os
 import tempfile
@@ -713,8 +8,8 @@ import re
 import platform
 from datetime import timedelta
 
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.helpers import escape_markdown
 
 from google.oauth2.service_account import Credentials
@@ -741,7 +36,6 @@ logger = logging.getLogger(__name__)
 
 # Глобальний словник для зберігання останніх дій користувачів
 user_last_actions = {}
-family_budget_amount = 0
 
 # Функція для знаходження FFmpeg
 def get_ffmpeg_path():
@@ -784,29 +78,6 @@ try:
 except Exception as e:
     logger.error(f"Помилка підключення до Google Speech-to-Text API: {e}")
     raise
-
-# Створення клавіатур
-def get_main_keyboard():
-    """Головна клавіатура з основними кнопками"""
-    keyboard = [
-        [KeyboardButton("📊 Моя статистика"), KeyboardButton("📅 За сьогодні")],
-        [KeyboardButton("📈 За тиждень"), KeyboardButton("📆 За місяць")],
-        [KeyboardButton("👫 Сімейний бюджет"), KeyboardButton("🏆 Топ категорій")],
-        [KeyboardButton("📝 Мої записи"), KeyboardButton("⚙️ Управління")],
-        [KeyboardButton("ℹ️ Довідка")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
-
-def get_management_keyboard():
-    """Inline клавіатура для управління"""
-    keyboard = [
-        [InlineKeyboardButton("🔄 Скасувати останній", callback_data="undo")],
-        [InlineKeyboardButton("🔕 Ігнорувати останній", callback_data="ignore")],
-        [InlineKeyboardButton("👥 Порівняти користувачів", callback_data="compare")],
-        [InlineKeyboardButton("💰 Статус бюджету", callback_data="budget_status")],
-        [InlineKeyboardButton("🏅 Хто більше витратив", callback_data="whospent")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
 
 def get_all_expenses():
     """Отримує всі записи витрат з Google Sheets"""
@@ -928,118 +199,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ffmpeg_status = "✅ Доступно" if FFMPEG_PATH else "❌ Не встановлено"
     
     welcome_message = (
-        "🤖 **Привіт! Я FinDotBot** - ваш особистий помічник для відстеження витрат!\n\n"
-        "💡 **Як користуватися:**\n\n"
-        "📝 **Записати витрату:**\n"
-        "• Текстом: `Категорія Сума Коментар`\n"
-        "• Приклад: `Їжа 250 Обід у ресторані`\n"
-        f"• 🎤 Голосом: {ffmpeg_status}\n\n"
-        "📊 **Переглянути статистику:**\n"
-        "• Використовуйте кнопки нижче для швидкого доступу\n\n"
-        "🎯 **Готовий почати? Виберіть дію з меню або просто напишіть свою витрату!**"
+        "🤖 Привіт! Я допоможу вести сімейний бюджет.\n\n"
+        "📝 Для запису надішли повідомлення у форматі:\n"
+        "Категорія Сума Коментар\n"
+        "Приклад: Їжа 250 Обід у ресторані\n\n"
+        f"🎤 Голосові повідомлення: {ffmpeg_status}\n\n"
+        "📊 Особиста статистика:\n"
+        "/mystats - твоя статистика за місяць\n"
+        "/recent - твої останні 5 записів\n\n"
+        "👫 Сімейна статистика:\n"
+        "/family - загальний сімейний бюджет\n"
+        "/compare - порівняння витрат між вами\n"
+        "/whospent - хто більше витратив\n\n"
+        "📅 Статистика за періоди:\n"
+        "/today - витрати за сьогодні\n"
+        "/week - витрати за тиждень\n"
+        "/month - витрати за місяць\n"
+        "/top - топ категорій\n\n"
+        "💰 Планування бюджету:\n"
+        "/budget 15000 - встановити бюджет\n"
+        "/budget_status - статус бюджету\n\n"
+        "🛠️ Управління записами:\n"
+        "/undo - скасувати останній запис\n"
+        "/ignore - позначити як ігнорований"
     )
-    
-    await update.message.reply_text(
-        welcome_message, 
-        reply_markup=get_main_keyboard(),
-        parse_mode='Markdown'
-    )
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда допомоги"""
-    help_text = """
-ℹ️ **Довідка FinDotBot**
-
-📝 **Формат запису витрат:**
-• `Категорія Сума` - базовий формат
-• `Категорія Сума Коментар` - з коментарем
-• Приклади:
-  - `Їжа 150`
-  - `Транспорт 50 Таксі додому`
-  - `Розваги 300 Кіно з друзями`
-
-🎤 **Голосові команди:**
-• Запишіть голосове повідомлення у тому ж форматі
-• Говоріть чітко українською мовою
-• Максимум 60 секунд
-
-📊 **Статистика:**
-• **За сьогодні** - витрати за поточний день
-• **За тиждень** - з понеділка поточного тижня
-• **За місяць** - поточний місяць
-• **Моя статистика** - особиста статистика за місяць
-• **Топ категорій** - найбільші витрати за місяць
-
-👫 **Для пар/сімей:**
-• **Сімейний бюджет** - загальна статистика всіх користувачів
-• **Порівняти користувачів** - детальне порівняння витрат
-• **Хто більше витратив** - рейтинг витрат за період
-
-⚙️ **Управління:**
-• **Скасувати останній** - видалити останній запис (до 10 хв)
-• **Ігнорувати останній** - приховати запис зі статистики
-• **Мої записи** - показати останні 5 записів
-
-💡 **Поради:**
-• Використовуйте короткі назви категорій
-• Коментарі допомагають згадати деталі витрат
-• Перевіряйте статистику регулярно для контролю бюджету
-"""
-    
-    await update.message.reply_text(help_text, parse_mode='Markdown')
-
-# Обробка кнопок
-async def handle_button_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обробка натискань кнопок та текстових повідомлень"""
-    text = update.message.text
-    
-    # Обробка кнопок
-    if text == "📊 Моя статистика":
-        await my_stats(update, context)
-    elif text == "📅 За сьогодні":
-        await stats_today(update, context)
-    elif text == "📈 За тиждень":
-        await stats_week(update, context)
-    elif text == "📆 За місяць":
-        await stats_month(update, context)
-    elif text == "👫 Сімейний бюджет":
-        await family_budget(update, context)
-    elif text == "🏆 Топ категорій":
-        await top_categories(update, context)
-    elif text == "📝 Мої записи":
-        await show_recent_expenses(update, context)
-    elif text == "⚙️ Управління":
-        await show_management(update, context)
-    elif text == "ℹ️ Довідка":
-        await help_command(update, context)
-    else:
-        # Обробка запису витрат
-        await handle_message(update, context)
-
-async def show_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показати меню управління"""
-    await update.message.reply_text(
-        "⚙️ **Управління записами**\n\nВиберіть дію:",
-        reply_markup=get_management_keyboard(),
-        parse_mode='Markdown'
-    )
-
-async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обробка inline кнопок"""
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "undo":
-        await undo_last_action_callback(update, context)
-    elif query.data == "ignore":
-        await mark_as_ignored_callback(update, context)
-    elif query.data == "compare":
-        await compare_users_callback(update, context)
-    elif query.data == "budget_status":
-        await budget_status_callback(update, context)
-    elif query.data == "whospent":
-        await who_spent_more_callback(update, context)
-
+    await update.message.reply_text(welcome_message)
 async def stats_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика за сьогодні"""
     expenses = get_all_expenses()
@@ -1162,7 +346,6 @@ async def undo_last_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 }
             }
         }]
-
         
         sheet.batchUpdate(
             spreadsheetId=SPREADSHEET_ID,
@@ -1181,81 +364,6 @@ async def undo_last_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Помилка скасування: {e}")
         await update.message.reply_text("❌ Помилка при скасуванні запису.")
-
-async def undo_last_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback версія скасування"""
-    user = update.callback_query.from_user
-    
-    if user.id not in user_last_actions:
-        await update.callback_query.edit_message_text("❌ Немає дій для скасування.")
-        return
-    
-    last_action = user_last_actions[user.id]
-    
-    # Перевіряємо, чи не застара дія (більше 10 хвилин)
-    if datetime.datetime.now() - last_action['timestamp'] > timedelta(minutes=10):
-        await update.callback_query.edit_message_text("❌ Час для скасування минув (максимум 10 хвилин).")
-        return
-    
-    try:
-        # Отримуємо всі записи
-        result = sheet.values().get(
-            spreadsheetId=SPREADSHEET_ID,
-            range=RANGE_NAME
-        ).execute()
-        
-        values = result.get('values', [])
-        if not values:
-            await update.callback_query.edit_message_text("❌ Таблиця порожня.")
-            return
-        
-        # Шукаємо запис для видалення
-        user_name = user.username or user.first_name or "Unknown"
-        row_to_delete = None
-        
-        for i, row in enumerate(values):
-            if len(row) >= 4:
-                if (row[0] == last_action['date'] and 
-                    row[1] == last_action['category'] and 
-                    float(row[2]) == last_action['amount'] and
-                    row[3] == user_name):
-                    row_to_delete = i + 1
-                    break
-        
-        if row_to_delete is None:
-            await update.callback_query.edit_message_text("❌ Запис не знайдено для скасування.")
-            return
-        
-        # Видаляємо рядок
-        requests = [{
-            'deleteDimension': {
-                'range': {
-                    'sheetId': 0,
-                    'dimension': 'ROWS',
-                    'startIndex': row_to_delete - 1,
-                    'endIndex': row_to_delete
-                }
-            }
-        }]
-        
-        sheet.batchUpdate(
-            spreadsheetId=SPREADSHEET_ID,
-            body={'requests': requests}
-        ).execute()
-        
-        # Видаляємо з кешу
-        del user_last_actions[user.id]
-        
-        await update.callback_query.edit_message_text(
-            f"✅ **Запис скасовано!**\n\n"
-            f"📂 Категорія: {last_action['category']}\n"
-            f"💰 Сума: {last_action['amount']:.2f} грн",
-            parse_mode='Markdown'
-        )
-        
-    except Exception as e:
-        logger.error(f"Помилка скасування: {e}")
-        await update.callback_query.edit_message_text("❌ Помилка при скасуванні запису.")
 
 async def mark_as_ignored(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Позначає останній запис як ігнорований для статистики"""
@@ -1328,78 +436,6 @@ async def mark_as_ignored(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Помилка позначення: {e}")
         await update.message.reply_text("❌ Помилка при позначенні запису.")
 
-async def mark_as_ignored_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback версія ігнорування"""
-    user = update.callback_query.from_user
-    
-    if user.id not in user_last_actions:
-        await update.callback_query.edit_message_text("❌ Немає дій для позначення.")
-        return
-    
-    last_action = user_last_actions[user.id]
-    
-    # Перевіряємо, чи не застара дія
-    if datetime.datetime.now() - last_action['timestamp'] > timedelta(minutes=10):
-        await update.callback_query.edit_message_text("❌ Час для позначення минув (максимум 10 хвилин).")
-        return
-    
-    try:
-        # Отримуємо всі записи
-        result = sheet.values().get(
-            spreadsheetId=SPREADSHEET_ID,
-            range=RANGE_NAME
-        ).execute()
-        
-        values = result.get('values', [])
-        if not values:
-            await update.callback_query.edit_message_text("❌ Таблиця порожня.")
-            return
-        
-        # Шукаємо запис для позначення
-        user_name = user.username or user.first_name or "Unknown"
-        row_to_update = None
-        
-        for i, row in enumerate(values):
-            if len(row) >= 4:
-                if (row[0] == last_action['date'] and 
-                    row[1] == last_action['category'] and 
-                    float(row[2]) == last_action['amount'] and
-                    row[3] == user_name):
-                    row_to_update = i + 1
-                    break
-        
-        if row_to_update is None:
-            await update.callback_query.edit_message_text("❌ Запис не знайдено для позначення.")
-            return
-        
-        # Додаємо префікс [IGNORED] до коментаря
-        current_comment = last_action.get('comment', '')
-        new_comment = f"[IGNORED] {current_comment}".strip()
-        
-        # Оновлюємо коментар
-        range_to_update = f"'Аркуш1'!E{row_to_update}"
-        sheet.values().update(
-            spreadsheetId=SPREADSHEET_ID,
-            range=range_to_update,
-            valueInputOption='USER_ENTERED',
-            body={'values': [[new_comment]]}
-        ).execute()
-        
-        # Видаляємо з кешу
-        del user_last_actions[user.id]
-        
-        await update.callback_query.edit_message_text(
-            f"🔕 **Запис ігноровано!**\n\n"
-            f"📂 Категорія: {last_action['category']}\n"
-            f"💰 Сума: {last_action['amount']:.2f} грн\n"
-            f"💡 Не буде враховуватись у статистиці",
-            parse_mode='Markdown'
-        )
-        
-    except Exception as e:
-        logger.error(f"Помилка позначення: {e}")
-        await update.callback_query.edit_message_text("❌ Помилка при позначенні запису.")
-
 async def show_recent_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показує останні 5 записів користувача"""
     user = update.message.from_user
@@ -1447,18 +483,22 @@ async def show_recent_expenses(update: Update, context: ContextTypes.DEFAULT_TYP
             ignored_mark = "🔕 " if exp['is_ignored'] else ""
             message += f"{i}. {ignored_mark}{exp['category']}: {exp['amount']:.2f} грн"
             if exp['comment'] and not exp['is_ignored']:
-                clean_comment = exp['comment'].replace('[IGNORED]', '').strip()
-                if clean_comment:
-                    message += f" ({clean_comment})"
+                message += f" ({exp['comment']})"
             message += f"\n   📅 {exp['date'].strftime('%d.%m %H:%M')}\n\n"
         
-        message += "💡 Використайте кнопку 'Управління' для додаткових дій"
+        message += "💡 Використайте /undo для скасування останньої дії\n"
+        message += "💡 Використайте /ignore для позначення як ігнорований"
         
         await update.message.reply_text(message)
         
     except Exception as e:
         logger.error(f"Помилка отримання записів: {e}")
         await update.message.reply_text("❌ Помилка при отриманні записів.")
+
+# Додайте після функції show_recent_expenses та перед async def handle_message
+
+# Глобальна змінна для сімейного бюджету
+family_budget_amount = 0
 
 async def compare_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Порівняння витрат між користувачами за місяць"""
@@ -1514,59 +554,6 @@ async def compare_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += "\n\n"
     
     await update.message.reply_text(message)
-
-async def compare_users_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback версія порівняння користувачів"""
-    expenses = get_all_expenses()
-    filtered_expenses = filter_expenses_by_period(expenses, "month")
-    
-    if not filtered_expenses:
-        await update.callback_query.edit_message_text("Немає витрат за поточний місяць.")
-        return
-    
-    # Збираємо статистику по користувачах
-    users_stats = {}
-    total_amount = 0
-    
-    for exp in filtered_expenses:
-        user = exp['user']
-        if user not in users_stats:
-            users_stats[user] = {
-                'total': 0,
-                'count': 0,
-                'categories': {}
-            }
-        
-        users_stats[user]['total'] += exp['amount']
-        users_stats[user]['count'] += 1
-        total_amount += exp['amount']
-        
-        category = exp['category']
-        if category not in users_stats[user]['categories']:
-            users_stats[user]['categories'][category] = 0
-        users_stats[user]['categories'][category] += exp['amount']
-    
-    # Формуємо повідомлення
-    message = "👫 **Порівняння витрат за місяць:**\n\n"
-    message += f"💰 Загальний бюджет: {total_amount:.2f} грн\n\n"
-    
-    # Сортуємо користувачів за сумою витрат
-    sorted_users = sorted(users_stats.items(), key=lambda x: x[1]['total'], reverse=True)
-    
-    for i, (user, stats) in enumerate(sorted_users, 1):
-        percentage = (stats['total'] / total_amount) * 100
-        avg_expense = stats['total'] / stats['count']
-        
-        message += f"**{i}. 👤 {user}:**\n"
-        message += f"💰 {stats['total']:.2f} грн ({percentage:.1f}%)\n"
-        message += f"📝 {stats['count']} записів\n"
-        message += f"📊 Середня: {avg_expense:.2f} грн\n"
-        
-        # Топ категорія користувача
-        top_category = max(stats['categories'].items(), key=lambda x: x[1])
-        message += f"🏆 Топ: {top_category[0]} ({top_category[1]:.0f}₴)\n\n"
-    
-    await update.callback_query.edit_message_text(message, parse_mode='Markdown')
 
 async def family_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Сімейний бюджет з детальною розбивкою"""
@@ -1670,43 +657,6 @@ async def who_spent_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(message)
 
-async def who_spent_more_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback версія рейтингу витрат"""
-    expenses = get_all_expenses()
-    filtered_expenses = filter_expenses_by_period(expenses, "month")
-    
-    if not filtered_expenses:
-        await update.callback_query.edit_message_text("Немає витрат за поточний місяць.")
-        return
-    
-    # Рахуємо по користувачах
-    users = {}
-    for exp in filtered_expenses:
-        user = exp['user']
-        users[user] = users.get(user, 0) + exp['amount']
-    
-    if len(users) < 2:
-        await update.callback_query.edit_message_text("Потрібно мінімум 2 користувачі для порівняння.")
-        return
-    
-    # Сортуємо користувачів
-    sorted_users = sorted(users.items(), key=lambda x: x[1], reverse=True)
-    total = sum(users.values())
-    
-    message = f"🏆 **Рейтинг витрат за місяць:**\n\n"
-    
-    for i, (user, amount) in enumerate(sorted_users, 1):
-        percentage = (amount / total) * 100
-        emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
-        message += f"{emoji} **{user}**: {amount:.2f} грн ({percentage:.1f}%)\n"
-    
-    # Додаємо різницю між першим і другим
-    if len(sorted_users) >= 2:
-        difference = sorted_users[0][1] - sorted_users[1][1]
-        message += f"\n💡 Різниця: {difference:.2f} грн"
-    
-    await update.callback_query.edit_message_text(message, parse_mode='Markdown')
-
 async def set_family_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Встановлення сімейного бюджету"""
     global family_budget_amount
@@ -1725,7 +675,7 @@ async def set_family_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             f"💰 Сімейний бюджет встановлено: {budget_amount:.2f} грн на місяць\n"
-            f"💡 Використайте кнопку 'Статус бюджету' для перевірки виконання"
+            f"💡 Використайте /budget_status для перевірки виконання бюджету"
         )
         
     except ValueError:
@@ -1775,54 +725,7 @@ async def budget_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bar = "█" * filled_length + "░" * (progress_length - filled_length)
     message += f"\n📊 Прогрес: {bar} {percentage:.1f}%"
     
-    await update.message.reply_text(message)
-
-async def budget_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback версія статусу бюджету"""
-    global family_budget_amount
-    
-    if family_budget_amount == 0:
-        await update.callback_query.edit_message_text(
-            "❌ **Бюджет не встановлено**\n\n"
-            "Використайте /budget СУМА для встановлення бюджету.",
-            parse_mode='Markdown'
-        )
-        return
-    
-    expenses = get_all_expenses()
-    month_expenses = filter_expenses_by_period(expenses, "month")
-    spent = sum(exp['amount'] for exp in month_expenses)
-    
-    remaining = family_budget_amount - spent
-    percentage = (spent / family_budget_amount) * 100
-    
-    message = f"💰 **Статус сімейного бюджету:**\n\n"
-    message += f"📊 Бюджет: {family_budget_amount:.2f} грн\n"
-    message += f"💸 Витрачено: {spent:.2f} грн ({percentage:.1f}%)\n"
-    
-    if remaining > 0:
-        message += f"✅ Залишилось: {remaining:.2f} грн\n"
-        
-        # Розрахунок денного бюджету
-        import calendar
-        now = datetime.datetime.now()
-        days_in_month = calendar.monthrange(now.year, now.month)[1]
-        days_passed = now.day
-        days_remaining = days_in_month - days_passed
-        
-        if days_remaining > 0:
-            daily_budget = remaining / days_remaining
-            message += f"📅 Денний ліміт: {daily_budget:.2f} грн"
-    else:
-        message += f"⚠️ Перевищення: {abs(remaining):.2f} грн"
-    
-    # Прогрес бар
-    progress_length = 10
-    filled_length = int(progress_length * percentage / 100)
-    bar = "█" * filled_length + "░" * (progress_length - filled_length)
-    message += f"\n\n📊 [{bar}] {percentage:.1f}%"
-    
-    await update.callback_query.edit_message_text(message, parse_mode='Markdown')
+    await update.message.reply_text(message)    
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -1916,14 +819,17 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def parse_expense_text(text):
     """Розбирає текст витрати з підтримкою різних форматів"""
+    # Видаляємо зайві пробіли та приводимо до нижнього регістру для аналізу
     text = text.strip()
     
+    # Варіант 1: Категорія Сума Коментар
     parts = text.split(maxsplit=2)
     if len(parts) >= 2:
         category = parts[0]
         amount_str = parts[1]
         comment = parts[2] if len(parts) == 3 else ""
         
+        # Спробуємо витягнути число з рядка
         amount_match = re.search(r'(\d+(?:[.,]\d+)?)', amount_str)
         if amount_match:
             amount_str = amount_match.group(1).replace(',', '.')
@@ -1957,6 +863,9 @@ async def process_and_save(text, user, update):
     values = [[date_str, category, amount, user_name, comment]]
 
     try:
+        # Спочатку перевіримо доступ до таблиці
+        logger.info(f"Спроба запису до таблиці {SPREADSHEET_ID}")
+        
         result = sheet.values().append(
             spreadsheetId=SPREADSHEET_ID,
             range=RANGE_NAME,
@@ -1964,6 +873,9 @@ async def process_and_save(text, user, update):
             body={'values': values}
         ).execute()
         
+        logger.info(f"Запис успішний: {result}")
+        
+        # Зберігаємо інформацію про останню дію користувача
         user_last_actions[user.id] = {
             'action': 'add',
             'date': date_str,
@@ -1983,12 +895,13 @@ async def process_and_save(text, user, update):
         if comment:
             success_message += f"\n💬 Коментар: {comment}"
         
-        success_message += f"\n\n💡 Використайте кнопку 'Управління' для додаткових дій"
+        success_message += f"\n\n💡 Якщо помилились, використайте /undo для скасування"
             
         await update.message.reply_text(success_message)
         
     except Exception as e:
         logger.error(f"Детальна помилка при записі до Google Sheets: {e}")
+        logger.error(f"Тип помилки: {type(e).__name__}")
         await update.message.reply_text("❌ Виникла помилка при записі даних. Перевірте доступ до таблиці.")
 
 def test_sheets_access():
@@ -2008,9 +921,10 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник помилок"""
     logger.error(f'Update {update} caused error {context.error}')
 
-# СПРОЩЕНА ФУНКЦІЯ MAIN БЕЗ ВЛАСНОГО EVENT LOOP
+# Замініть функцію main() в кінці файлу finedot_bot.py на цю:
+
 async def main():
-    """Запускає бота БЕЗ власного event loop"""
+    """Запускає бота"""
     if not os.path.exists(SERVICE_ACCOUNT_FILE):
         logger.error(f"Файл сервісного акаунту не знайдено: {SERVICE_ACCOUNT_FILE}")
         return
@@ -2025,7 +939,6 @@ async def main():
 
     # Додаємо обробники команд
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("today", stats_today))
     app.add_handler(CommandHandler("week", stats_week))
@@ -2046,11 +959,8 @@ async def main():
     app.add_handler(CommandHandler("budget", set_family_budget))
     app.add_handler(CommandHandler("budget_status", budget_status))
     
-    # НОВІ ОБРОБНИКИ для кнопок
-    app.add_handler(CallbackQueryHandler(handle_callback_query))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_text))
-    
-    # Обробники голосових повідомлень
+    # Обробники повідомлень
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     
     # Додаємо обробник помилок
@@ -2062,6 +972,31 @@ async def main():
     else:
         logger.warning("Голосові повідомлення вимкнені (FFmpeg не знайдено)")
     
-    # ПРОСТИЙ ЗАПУСК БЕЗ ВЛАСНОГО EVENT LOOP
-    logger.info("✅ FinDotBot з кнопками успішно запущено!")
-    await app.run_polling()
+    # ВИПРАВЛЕНИЙ ЗАПУСК - замість app.run_polling()
+    try:
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        
+        # Тримаємо бота живим
+        while True:
+            await asyncio.sleep(1)
+            
+    except Exception as e:
+        logger.error(f"Помилка запуску бота: {e}")
+        raise
+    finally:
+        # Коректне зупинення
+        try:
+            await app.updater.stop()
+            await app.stop()
+            await app.shutdown()
+        except Exception as e:
+            logger.error(f"Помилка зупинки бота: {e}")
+
+# ВАЖЛИВО: Видаліть ці рядки в кінці файлу, якщо вони є:
+# if __name__ == '__main__':
+#     main()
+# або
+# if __name__ == '__main__':
+#     asyncio.run(main())
