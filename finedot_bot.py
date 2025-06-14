@@ -1087,43 +1087,48 @@ async def test_sheets_access():
         logger.error(f"❌ Помилка доступу до Google Sheets: {e}")
         return False
 
-async def main():
-    """Запускає бота"""
-    if not os.path.exists(config.SERVICE_ACCOUNT_FILE):
-        logger.error(f"Файл сервісного акаунту не знайдено: {config.SERVICE_ACCOUNT_FILE}")
-        return
+def main():
+    """Головна функція запуску бота"""
+    logger.info("🚀 Запуск FinDotBot...")
     
-    # Тестуємо доступ до Google Sheets
+    # Тестування доступу до Google Sheets
     try:
-        await test_sheets_access()
+        # Синхронний виклик для тестування
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        if not loop.run_until_complete(test_sheets_access()):
+            logger.error("❌ Не вдається підключитися до Google Sheets. Перевірте налаштування.")
+            return
+        loop.close()
     except Exception as e:
-        logger.error(f"Не вдалося протестувати доступ до Google Sheets: {e}")
+        logger.error(f"Помилка тестування Google Sheets: {e}")
     
-    app = Application.builder().token(config.TOKEN).build()
-
-    # Додаємо обробники команд
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("budget", set_family_budget))
+    # Створення додатка
+    application = Application.builder().token(config.TOKEN).build()
+    
+    # Реєстрація обробників команд
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("budget", set_family_budget))
     
     # Обробник inline кнопок
-    app.add_handler(CallbackQueryHandler(handle_callback_query))
+    application.add_handler(CallbackQueryHandler(handle_callback_query))
     
     # Обробник текстових повідомлень та кнопок
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_text))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_text))
     
     # Обробник голосових повідомлень
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-
-    logger.info("Бот запускається...")
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    
     logger.info("✅ FinDotBot з кнопками успішно запущено!")
     
     # Запуск бота
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     try:
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         logger.info("🛑 FinDotBot зупинено користувачем")
     except Exception as e:
