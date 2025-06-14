@@ -1,12 +1,12 @@
 for i, row in enumerate(values):
             if len(row) >= 4:
-                if (row[0] == last_action['date'] and 
-                    row[1] == last_action['category'] and 
+                if (row[0] == last_action['date'] and
+                    row[1] == last_action['category'] and
                     float(row[2]) == last_action['amount'] and
                     row[3] == user_name):
                     row_to_update = i + 1
                     break
-        
+
         if row_to_update is None:
             await update.callback_query.edit_message_text("❌ Запис не знайдено для позначення.")
             return
