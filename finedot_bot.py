@@ -921,7 +921,9 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник помилок"""
     logger.error(f'Update {update} caused error {context.error}')
 
-def main():
+# Замініть функцію main() в кінці файлу finedot_bot.py на цю:
+
+async def main():
     """Запускає бота"""
     if not os.path.exists(SERVICE_ACCOUNT_FILE):
         logger.error(f"Файл сервісного акаунту не знайдено: {SERVICE_ACCOUNT_FILE}")
@@ -950,7 +952,7 @@ def main():
     app.add_handler(CommandHandler("ignore", mark_as_ignored))
     app.add_handler(CommandHandler("recent", show_recent_expenses))
     
-    # НОВІ КОМАНДИ для пар - ДОДАЙТЕ ЦІ РЯДКИ:
+    # НОВІ КОМАНДИ для пар
     app.add_handler(CommandHandler("compare", compare_users))
     app.add_handler(CommandHandler("family", family_budget))
     app.add_handler(CommandHandler("whospent", who_spent_more))
@@ -970,7 +972,31 @@ def main():
     else:
         logger.warning("Голосові повідомлення вимкнені (FFmpeg не знайдено)")
     
-    app.run_polling()
+    # ВИПРАВЛЕНИЙ ЗАПУСК - замість app.run_polling()
+    try:
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        
+        # Тримаємо бота живим
+        while True:
+            await asyncio.sleep(1)
+            
+    except Exception as e:
+        logger.error(f"Помилка запуску бота: {e}")
+        raise
+    finally:
+        # Коректне зупинення
+        try:
+            await app.updater.stop()
+            await app.stop()
+            await app.shutdown()
+        except Exception as e:
+            logger.error(f"Помилка зупинки бота: {e}")
 
-if __name__ == '__main__':
-    main()
+# ВАЖЛИВО: Видаліть ці рядки в кінці файлу, якщо вони є:
+# if __name__ == '__main__':
+#     main()
+# або
+# if __name__ == '__main__':
+#     asyncio.run(main())
