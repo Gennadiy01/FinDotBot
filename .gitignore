@@ -2,10 +2,10 @@
 findot-sheets-sync-acd9b0292ce3.json
 *.json
 venv/
+bukup/
 __pycache__/
 .env
 .DS_Store
 temp/
 .docx
 .toml
-.txt
