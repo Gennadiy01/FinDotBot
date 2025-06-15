@@ -1091,11 +1091,21 @@ async def main():
     else:
         logger.warning("⚠️ Голосові повідомлення вимкнені (FFmpeg не знайдено)")
     
-    # ВИПРАВЛЕНИЙ ЗАПУСК - замість app.run_polling()
+    # ВИПРАВЛЕНИЙ ЗАПУСК з очищенням конфліктів
     try:
         await app.initialize()
         await app.start()
-        await app.updater.start_polling()
+        
+        # Додаємо затримку перед polling для очищення конфліктів
+        await asyncio.sleep(3)
+        logger.info("🔄 Починаємо polling після очищення...")
+        
+        await app.updater.start_polling(
+            drop_pending_updates=True,
+            bootstrap_retries=5,  # Збільшуємо кількість спроб
+            timeout=30,  # Збільшуємо timeout
+            allowed_updates=["message", "callback_query"]  # Обмежуємо типи updates
+        )
         
         # Тримаємо бота живим
         while True:
