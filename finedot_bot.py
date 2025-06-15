@@ -11,8 +11,8 @@ import sys
 import time
 from datetime import timedelta
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.helpers import escape_markdown
 from telegram.request import HTTPXRequest
 from telegram.error import TimedOut, NetworkError
@@ -65,6 +65,70 @@ class ConnectionMonitor:
 # Створюємо глобальний монітор
 monitor = ConnectionMonitor()
 
+# === ФУНКЦІЇ ДЛЯ СТВОРЕННЯ КНОПОК ===
+
+def create_main_menu():
+    """Створює головне меню з inline кнопками"""
+    keyboard = [
+        [InlineKeyboardButton("📊 Моя статистика", callback_data="menu_my_stats")],
+        [InlineKeyboardButton("👫 Сімейна статистика", callback_data="menu_family_stats")],
+        [InlineKeyboardButton("📅 За періодами", callback_data="menu_periods")],
+        [InlineKeyboardButton("💰 Бюджет", callback_data="menu_budget")],
+        [InlineKeyboardButton("🛠️ Управління", callback_data="menu_management")],
+        [InlineKeyboardButton("❓ Довідка", callback_data="help")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def create_my_stats_menu():
+    """Підменю особистої статистики"""
+    keyboard = [
+        [InlineKeyboardButton("📊 Моя статистика за місяць", callback_data="cmd_mystats")],
+        [InlineKeyboardButton("📝 Мої останні записи", callback_data="cmd_recent")],
+        [InlineKeyboardButton("← Назад", callback_data="main_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def create_family_stats_menu():
+    """Підменю сімейної статистики"""
+    keyboard = [
+        [InlineKeyboardButton("💼 Сімейний бюджет", callback_data="cmd_family")],
+        [InlineKeyboardButton("👫 Порівняння витрат", callback_data="cmd_compare")],
+        [InlineKeyboardButton("🏆 Хто більше витратив", callback_data="cmd_whospent")],
+        [InlineKeyboardButton("← Назад", callback_data="main_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def create_periods_menu():
+    """Підменю статистики за періодами"""
+    keyboard = [
+        [InlineKeyboardButton("📅 Сьогодні", callback_data="cmd_today")],
+        [InlineKeyboardButton("📅 Тиждень", callback_data="cmd_week")],
+        [InlineKeyboardButton("📅 Місяць", callback_data="cmd_month")],
+        [InlineKeyboardButton("🏆 Топ категорій", callback_data="cmd_top")],
+        [InlineKeyboardButton("← Назад", callback_data="main_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def create_budget_menu():
+    """Підменю бюджету"""
+    keyboard = [
+        [InlineKeyboardButton("💰 Статус бюджету", callback_data="cmd_budget_status")],
+        [InlineKeyboardButton("⚙️ Встановити бюджет", callback_data="help_budget")],
+        [InlineKeyboardButton("← Назад", callback_data="main_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def create_management_menu():
+    """Підменю управління записами"""
+    keyboard = [
+        [InlineKeyboardButton("↶ Скасувати останній запис", callback_data="cmd_undo")],
+        [InlineKeyboardButton("🔕 Позначити як ігнорований", callback_data="cmd_ignore")],
+        [InlineKeyboardButton("← Назад", callback_data="main_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# === БЕЗПЕЧНІ ФУНКЦІЇ ===
+
 # Функція для безпечного виконання операцій бота
 async def safe_bot_operation(operation, max_retries=3):
     """Безпечне виконання операцій бота з retry логікою"""
@@ -103,6 +167,21 @@ async def safe_send_message(update, context, text, **kwargs):
             return await update.message.reply_text("❌ Виникла помилка при обробці запиту")
         except:
             logger.error("Критична помилка з'єднання з Telegram")
+
+# Безпечна відправка повідомлень для callback
+async def safe_send_callback_message(query, text, **kwargs):
+    """Безпечна відправка повідомлень через callback query"""
+    try:
+        if 'reply_markup' in kwargs:
+            return await query.edit_message_text(text, **kwargs)
+        else:
+            return await query.edit_message_text(text)
+    except Exception as e:
+        logger.error(f"Не вдалося відправити callback повідомлення: {e}")
+        try:
+            await query.answer("❌ Виникла помилка при обробці запиту")
+        except:
+            logger.error("Критична помилка з callback query")
 
 # Функція для знаходження FFmpeg
 def get_ffmpeg_path():
@@ -289,10 +368,572 @@ def generate_stats_message(expenses, period_name, user_filter=None):
     
     return message
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# === ОБРОБНИК CALLBACK ЗАПИТІВ ===
+
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обробник натискань на inline кнопки"""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    
+    try:
+        # Головне меню
+        if data == "main_menu":
+            await safe_send_callback_message(
+                query, 
+                "🤖 Головне меню:", 
+                reply_markup=create_main_menu()
+            )
+        
+        # Підменю
+        elif data == "menu_my_stats":
+            await safe_send_callback_message(
+                query, 
+                "📊 Моя статистика:", 
+                reply_markup=create_my_stats_menu()
+            )
+        
+        elif data == "menu_family_stats":
+            await safe_send_callback_message(
+                query, 
+                "👫 Сімейна статистика:", 
+                reply_markup=create_family_stats_menu()
+            )
+        
+        elif data == "menu_periods":
+            await safe_send_callback_message(
+                query, 
+                "📅 Статистика за періодами:", 
+                reply_markup=create_periods_menu()
+            )
+        
+        elif data == "menu_budget":
+            await safe_send_callback_message(
+                query, 
+                "💰 Управління бюджетом:", 
+                reply_markup=create_budget_menu()
+            )
+        
+        elif data == "menu_management":
+            await safe_send_callback_message(
+                query, 
+                "🛠️ Управління записами:", 
+                reply_markup=create_management_menu()
+            )
+        
+        # Команди
+        elif data.startswith("cmd_"):
+            command = data.replace("cmd_", "")
+            await execute_command_from_callback(query, command, context)
+        
+        # Довідка
+        elif data == "help":
+            await show_help(query)
+        
+        elif data == "help_budget":
+            await safe_send_callback_message(
+                query,
+                "💰 Встановлення бюджету:\n\n"
+                "Для встановлення бюджету використайте команду:\n"
+                "/budget 15000\n\n"
+                "Приклад: /budget 20000 встановить бюджет 20000 грн на місяць",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="menu_budget")]])
+            )
+        
+    except Exception as e:
+        logger.error(f"Помилка обробки callback: {e}")
+        await query.answer("❌ Виникла помилка. Спробуйте ще раз.")
+
+async def execute_command_from_callback(query, command, context):
+    """Виконує команду з callback кнопки"""
+    # Створюємо фейковий update для виконання команди
+    fake_update = type('FakeUpdate', (), {
+        'message': type('FakeMessage', (), {
+            'from_user': query.from_user,
+            'reply_text': lambda text, **kwargs: safe_send_callback_message(query, text, **kwargs)
+        })()
+    })()
+    
+    if command == "mystats":
+        await my_stats_callback(query, context)
+    elif command == "recent":
+        await show_recent_expenses_callback(query, context)
+    elif command == "family":
+        await family_budget_callback(query, context)
+    elif command == "compare":
+        await compare_users_callback(query, context)
+    elif command == "whospent":
+        await who_spent_more_callback(query, context)
+    elif command == "today":
+        await stats_today_callback(query, context)
+    elif command == "week":
+        await stats_week_callback(query, context)
+    elif command == "month":
+        await stats_month_callback(query, context)
+    elif command == "top":
+        await top_categories_callback(query, context)
+    elif command == "budget_status":
+        await budget_status_callback(query, context)
+    elif command == "undo":
+        await undo_last_action_callback(query, context)
+    elif command == "ignore":
+        await mark_as_ignored_callback(query, context)
+
+# === CALLBACK ФУНКЦІЇ ===
+
+async def my_stats_callback(query, context):
+    """Особиста статистика через callback"""
+    user = query.from_user
+    user_name = user.username or user.first_name or "Unknown"
+    
+    expenses = get_all_expenses()
+    filtered_expenses = filter_expenses_by_period(expenses, "month", user_name)
+    message = generate_stats_message(filtered_expenses, "поточний місяць", user_name)
+    
+    back_button = InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="menu_my_stats")]])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
+async def show_recent_expenses_callback(query, context):
+    """Показує останні записи через callback"""
+    user = query.from_user
+    user_name = user.username or user.first_name or "Unknown"
+    
+    try:
+        # Отримуємо всі записи
+        result = sheet.values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=RANGE_NAME
+        ).execute()
+        
+        values = result.get('values', [])
+        if not values:
+            message = "❌ Немає записів."
+        else:
+            # Фільтруємо записи користувача
+            user_expenses = []
+            for i, row in enumerate(values[1:], 2):
+                if len(row) >= 4 and row[3] == user_name:
+                    try:
+                        date_obj = datetime.datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                        user_expenses.append({
+                            'row': i,
+                            'date': date_obj,
+                            'category': row[1],
+                            'amount': float(row[2]),
+                            'comment': row[4] if len(row) > 4 else "",
+                            'is_ignored': len(row) > 4 and '[IGNORED]' in row[4]
+                        })
+                    except (ValueError, IndexError):
+                        continue
+            
+            if not user_expenses:
+                message = "❌ У вас немає записів."
+            else:
+                # Сортуємо за датою і беремо останні 5
+                user_expenses.sort(key=lambda x: x['date'], reverse=True)
+                recent_expenses = user_expenses[:5]
+                
+                message = "📝 Ваші останні записи:\n\n"
+                for i, exp in enumerate(recent_expenses, 1):
+                    ignored_mark = "🔕 " if exp['is_ignored'] else ""
+                    message += f"{i}. {ignored_mark}{exp['category']}: {exp['amount']:.2f} грн"
+                    if exp['comment'] and not exp['is_ignored']:
+                        message += f" ({exp['comment']})"
+                    message += f"\n   📅 {exp['date'].strftime('%d.%m %H:%M')}\n\n"
+        
+        back_button = InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="menu_my_stats")]])
+        await safe_send_callback_message(query, message, reply_markup=back_button)
+        
+    except Exception as e:
+        logger.error(f"Помилка отримання записів: {e}")
+        back_button = InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="menu_my_stats")]])
+        await safe_send_callback_message(query, "❌ Помилка при отриманні записів.", reply_markup=back_button)
+
+async def family_budget_callback(query, context):
+    """Сімейний бюджет через callback"""
+    expenses = get_all_expenses()
+    
+    # Статистика за тиждень
+    week_expenses = filter_expenses_by_period(expenses, "week")
+    week_total = sum(exp['amount'] for exp in week_expenses)
+    
+    # Статистика за місяць
+    month_expenses = filter_expenses_by_period(expenses, "month")
+    month_total = sum(exp['amount'] for exp in month_expenses)
+    
+    if not month_expenses:
+        message = "Немає витрат за поточний місяць."
+    else:
+        # По користувачах за місяць
+        users_month = {}
+        for exp in month_expenses:
+            user = exp['user']
+            users_month[user] = users_month.get(user, 0) + exp['amount']
+        
+        # По категоріях за місяць
+        categories_month = {}
+        for exp in month_expenses:
+            category = exp['category']
+            categories_month[category] = categories_month.get(category, 0) + exp['amount']
+        
+        # Формуємо звіт
+        message = "💼 Сімейний бюджет:\n\n"
+        
+        message += f"📅 За тиждень: {week_total:.2f} грн\n"
+        message += f"📅 За місяць: {month_total:.2f} грн\n"
+        
+        if week_total > 0:
+            projected_month = (week_total / 7) * 30
+            message += f"📈 Прогноз на місяць: {projected_month:.2f} грн\n"
+        
+        message += "\n👥 Розподіл по сім'ї:\n"
+        for user, amount in sorted(users_month.items(), key=lambda x: x[1], reverse=True):
+            percentage = (amount / month_total) * 100
+            message += f"• {user}: {amount:.2f} грн ({percentage:.1f}%)\n"
+        
+        message += "\n📂 Основні категорії:\n"
+        for category, amount in sorted(categories_month.items(), key=lambda x: x[1], reverse=True)[:5]:
+            percentage = (amount / month_total) * 100
+            message += f"• {category}: {amount:.2f} грн ({percentage:.1f}%)\n"
+    
+    back_button = InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="menu_family_stats")]])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
+async def compare_users_callback(query, context):
+    """Порівняння користувачів через callback"""
+    expenses = get_all_expenses()
+    filtered_expenses = filter_expenses_by_period(expenses, "month")
+    
+    if not filtered_expenses:
+        message = "Немає витрат за поточний місяць."
+    else:
+        # Збираємо статистику по користувачах
+        users_stats = {}
+        total_amount = 0
+        
+        for exp in filtered_expenses:
+            user = exp['user']
+            if user not in users_stats:
+                users_stats[user] = {
+                    'total': 0,
+                    'count': 0,
+                    'categories': {}
+                }
+            
+            users_stats[user]['total'] += exp['amount']
+            users_stats[user]['count'] += 1
+            total_amount += exp['amount']
+            
+            category = exp['category']
+            if category not in users_stats[user]['categories']:
+                users_stats[user]['categories'][category] = 0
+            users_stats[user]['categories'][category] += exp['amount']
+        
+        # Формуємо повідомлення
+        message = "👫 Порівняння витрат за місяць:\n\n"
+        message += f"💰 Загальний бюджет сім'ї: {total_amount:.2f} грн\n\n"
+        
+        # Сортуємо користувачів за сумою витрат
+        sorted_users = sorted(users_stats.items(), key=lambda x: x[1]['total'], reverse=True)
+        
+        for i, (user, stats) in enumerate(sorted_users, 1):
+            percentage = (stats['total'] / total_amount) * 100
+            avg_expense = stats['total'] / stats['count']
+            
+            message += f"{i}. 👤 {user}:\n"
+            message += f"   💰 {stats['total']:.2f} грн ({percentage:.1f}%)\n"
+            message += f"   📝 {stats['count']} записів\n"
+            message += f"   📊 Середня витрата: {avg_expense:.2f} грн\n"
+            
+            # Топ-3 категорії користувача
+            top_categories = sorted(stats['categories'].items(), key=lambda x: x[1], reverse=True)[:3]
+            message += "   🏆 Топ категорії: "
+            message += ", ".join([f"{cat} ({amt:.0f}₴)" for cat, amt in top_categories])
+            message += "\n\n"
+    
+    back_button = InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="menu_family_stats")]])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
+async def who_spent_more_callback(query, context):
+    """Хто більше витратив через callback"""
+    expenses = get_all_expenses()
+    filtered_expenses = filter_expenses_by_period(expenses, "month")
+    
+    if not filtered_expenses:
+        message = "Немає витрат за поточний місяць."
+    else:
+        # Рахуємо по користувачах
+        users = {}
+        for exp in filtered_expenses:
+            user = exp['user']
+            users[user] = users.get(user, 0) + exp['amount']
+        
+        if len(users) < 2:
+            message = "Потрібно мінімум 2 користувачі для порівняння."
+        else:
+            # Сортуємо користувачів
+            sorted_users = sorted(users.items(), key=lambda x: x[1], reverse=True)
+            total = sum(users.values())
+            
+            message = f"🏆 Рейтинг витрат цього місяця:\n\n"
+            
+            for i, (user, amount) in enumerate(sorted_users, 1):
+                percentage = (amount / total) * 100
+                emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
+                message += f"{emoji} {user}: {amount:.2f} грн ({percentage:.1f}%)\n"
+            
+            # Додаємо різницю між першим і другим
+            if len(sorted_users) >= 2:
+                difference = sorted_users[0][1] - sorted_users[1][1]
+                message += f"\n💸 Різниця: {difference:.2f} грн"
+                
+                if difference > 0:
+                    message += f"\n💡 {sorted_users[0][0]} витратив більше на {difference:.2f} грн"
+    
+    back_button = InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="menu_family_stats")]])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
+async def stats_today_callback(query, context):
+    """Статистика за сьогодні через callback"""
+    expenses = get_all_expenses()
+    filtered_expenses = filter_expenses_by_period(expenses, "day")
+    message = generate_stats_message(filtered_expenses, "сьогодні")
+    
+    back_button = InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="menu_periods")]])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
+async def stats_week_callback(query, context):
+    """Статистика за тиждень через callback"""
+    expenses = get_all_expenses()
+    filtered_expenses = filter_expenses_by_period(expenses, "week")
+    message = generate_stats_message(filtered_expenses, "поточний тиждень")
+    
+    back_button = InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="menu_periods")]])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
+async def stats_month_callback(query, context):
+    """Статистика за місяць через callback"""
+    expenses = get_all_expenses()
+    filtered_expenses = filter_expenses_by_period(expenses, "month")
+    message = generate_stats_message(filtered_expenses, "поточний місяць")
+    
+    back_button = InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="menu_periods")]])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
+async def top_categories_callback(query, context):
+    """Топ категорій через callback"""
+    expenses = get_all_expenses()
+    filtered_expenses = filter_expenses_by_period(expenses, "month")
+    
+    if not filtered_expenses:
+        message = "Немає витрат за поточний місяць."
+    else:
+        # Рахуємо по категоріях
+        categories = {}
+        for exp in filtered_expenses:
+            category = exp['category']
+            categories[category] = categories.get(category, 0) + exp['amount']
+        
+        total = sum(categories.values())
+        
+        message = "🏆 Топ категорій за місяць:\n\n"
+        for i, (category, amount) in enumerate(sorted(categories.items(), key=lambda x: x[1], reverse=True), 1):
+            percentage = (amount / total) * 100
+            emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+            message += f"{emoji} {category}: {amount:.2f} грн ({percentage:.1f}%)\n"
+    
+    back_button = InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="menu_periods")]])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
+async def budget_status_callback(query, context):
+    """Статус бюджету через callback"""
+    global family_budget_amount
+    
+    if family_budget_amount == 0:
+        message = ("❌ Бюджет не встановлено.\n"
+                  "Використайте /budget СУМА для встановлення бюджету.")
+    else:
+        expenses = get_all_expenses()
+        month_expenses = filter_expenses_by_period(expenses, "month")
+        spent = sum(exp['amount'] for exp in month_expenses)
+        
+        remaining = family_budget_amount - spent
+        percentage = (spent / family_budget_amount) * 100
+        
+        message = f"💰 Статус сімейного бюджету:\n\n"
+        message += f"📊 Бюджет на місяць: {family_budget_amount:.2f} грн\n"
+        message += f"💸 Витрачено: {spent:.2f} грн ({percentage:.1f}%)\n"
+        
+        if remaining > 0:
+            message += f"✅ Залишилось: {remaining:.2f} грн\n"
+            
+            # Розрахунок денного бюджету
+            import calendar
+            now = datetime.datetime.now()
+            days_in_month = calendar.monthrange(now.year, now.month)[1]
+            days_passed = now.day
+            days_remaining = days_in_month - days_passed
+            
+            if days_remaining > 0:
+                daily_budget = remaining / days_remaining
+                message += f"📅 Можна витрачати {daily_budget:.2f} грн на день\n"
+        else:
+            message += f"⚠️ Перевищення бюджету: {abs(remaining):.2f} грн\n"
+        
+        # Прогрес бар
+        progress_length = 10
+        filled_length = int(progress_length * percentage / 100)
+        bar = "█" * filled_length + "░" * (progress_length - filled_length)
+        message += f"\n📊 Прогрес: {bar} {percentage:.1f}%"
+    
+    back_button = InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="menu_budget")]])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
+async def undo_last_action_callback(query, context):
+    """Скасування останньої дії через callback"""
+    user = query.from_user
+    
+    if user.id not in user_last_actions:
+        message = "❌ Немає дій для скасування."
+    else:
+        last_action = user_last_actions[user.id]
+        
+        # Перевіряємо, чи не застара дія (більше 10 хвилин)
+        if datetime.datetime.now() - last_action['timestamp'] > timedelta(minutes=10):
+            message = "❌ Час для скасування минув (максимум 10 хвилин)."
+        else:
+            try:
+                # Отримуємо всі записи
+                result = sheet.values().get(
+                    spreadsheetId=SPREADSHEET_ID,
+                    range=RANGE_NAME
+                ).execute()
+                
+                values = result.get('values', [])
+                if not values:
+                    message = "❌ Таблиця порожня."
+                else:
+                    # Шукаємо запис для видалення
+                    user_name = user.username or user.first_name or "Unknown"
+                    row_to_delete = None
+                    
+                    for i, row in enumerate(values):
+                        if len(row) >= 4:
+                            if (row[0] == last_action['date'] and 
+                                row[1] == last_action['category'] and 
+                                float(row[2]) == last_action['amount'] and
+                                row[3] == user_name):
+                                row_to_delete = i + 1  # +1 тому що Google Sheets починає з 1
+                                break
+                    
+                    if row_to_delete is None:
+                        message = "❌ Запис не знайдено для скасування."
+                    else:
+                        # Видаляємо рядок
+                        requests = [{
+                            'deleteDimension': {
+                                'range': {
+                                    'sheetId': 0,  # Перший аркуш
+                                    'dimension': 'ROWS',
+                                    'startIndex': row_to_delete - 1,  # 0-based index
+                                    'endIndex': row_to_delete
+                                }
+                            }
+                        }]
+                        
+                        sheet.batchUpdate(
+                            spreadsheetId=SPREADSHEET_ID,
+                            body={'requests': requests}
+                        ).execute()
+                        
+                        # Видаляємо з кешу
+                        del user_last_actions[user.id]
+                        
+                        message = (f"✅ Запис скасовано:\n"
+                                 f"📂 Категорія: {last_action['category']}\n"
+                                 f"💰 Сума: {last_action['amount']:.2f} грн")
+                        
+            except Exception as e:
+                logger.error(f"Помилка скасування: {e}")
+                message = "❌ Помилка при скасуванні запису."
+    
+    back_button = InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="menu_management")]])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
+async def mark_as_ignored_callback(query, context):
+    """Позначення як ігнорований через callback"""
+    user = query.from_user
+    
+    if user.id not in user_last_actions:
+        message = "❌ Немає дій для позначення."
+    else:
+        last_action = user_last_actions[user.id]
+        
+        # Перевіряємо, чи не застара дія
+        if datetime.datetime.now() - last_action['timestamp'] > timedelta(minutes=10):
+            message = "❌ Час для позначення минув (максимум 10 хвилин)."
+        else:
+            try:
+                # Отримуємо всі записи
+                result = sheet.values().get(
+                    spreadsheetId=SPREADSHEET_ID,
+                    range=RANGE_NAME
+                ).execute()
+                
+                values = result.get('values', [])
+                if not values:
+                    message = "❌ Таблиця порожня."
+                else:
+                    # Шукаємо запис для позначення
+                    user_name = user.username or user.first_name or "Unknown"
+                    row_to_update = None
+                    
+                    for i, row in enumerate(values):
+                        if len(row) >= 4:
+                            if (row[0] == last_action['date'] and 
+                                row[1] == last_action['category'] and 
+                                float(row[2]) == last_action['amount'] and
+                                row[3] == user_name):
+                                row_to_update = i + 1  # +1 тому що Google Sheets починає з 1
+                                break
+                    
+                    if row_to_update is None:
+                        message = "❌ Запис не знайдено для позначення."
+                    else:
+                        # Додаємо префікс [IGNORED] до коментаря
+                        current_comment = last_action.get('comment', '')
+                        new_comment = f"[IGNORED] {current_comment}".strip()
+                        
+                        # Оновлюємо коментар
+                        range_to_update = f"'Аркуш1'!E{row_to_update}"
+                        sheet.values().update(
+                            spreadsheetId=SPREADSHEET_ID,
+                            range=range_to_update,
+                            valueInputOption='USER_ENTERED',
+                            body={'values': [[new_comment]]}
+                        ).execute()
+                        
+                        # Видаляємо з кешу
+                        del user_last_actions[user.id]
+                        
+                        message = (f"🔕 Запис позначено як ігнорований:\n"
+                                 f"📂 Категорія: {last_action['category']}\n"
+                                 f"💰 Сума: {last_action['amount']:.2f} грн\n"
+                                 f"💡 Він не буде враховуватись у статистиці")
+                        
+            except Exception as e:
+                logger.error(f"Помилка позначення: {e}")
+                message = "❌ Помилка при позначенні запису."
+    
+    back_button = InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="menu_management")]])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
+async def show_help(query):
+    """Показує повну довідку"""
     ffmpeg_status = "✅ Доступно" if FFMPEG_PATH else "❌ Не встановлено"
     
-    welcome_message = (
+    help_message = (
         "🤖 Привіт! Я допоможу вести сімейний бюджет.\n\n"
         "📝 Для запису надішли повідомлення у форматі:\n"
         "Категорія Сума Коментар\n"
@@ -317,7 +958,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/undo - скасувати останній запис\n"
         "/ignore - позначити як ігнорований"
     )
-    await safe_send_message(update, context, welcome_message)
+    
+    back_button = InlineKeyboardMarkup([[InlineKeyboardButton("← Головне меню", callback_data="main_menu")]])
+    await safe_send_callback_message(query, help_message, reply_markup=back_button)
+
+# === ОРИГІНАЛЬНІ ФУНКЦІЇ (НЕЗМІНЕНІ) ===
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /start з кнопками"""
+    welcome_message = (
+        "🤖 Привіт! Я допоможу вести сімейний бюджет.\n\n"
+        "📝 Для запису надішли повідомлення у форматі:\n"
+        "Категорія Сума Коментар\n"
+        "Приклад: Їжа 250 Обід у ресторані\n\n"
+        "Виберіть опцію з меню:"
+    )
+    await safe_send_message(update, context, welcome_message, reply_markup=create_main_menu())
 
 async def stats_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика за сьогодні"""
@@ -1053,6 +1709,9 @@ def add_handlers(app):
     app.add_handler(CommandHandler("whospent", who_spent_more))
     app.add_handler(CommandHandler("budget", set_family_budget))
     app.add_handler(CommandHandler("budget_status", budget_status))
+    
+    # НОВИЙ ОБРОБНИК CALLBACK ЗАПИТІВ
+    app.add_handler(CallbackQueryHandler(handle_callback_query))
     
     # Обробники повідомлень
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
