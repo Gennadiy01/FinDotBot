@@ -6,11 +6,16 @@ import subprocess
 import asyncio
 import re
 import platform
+import signal
+import sys
+import time
 from datetime import timedelta
 
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.helpers import escape_markdown
+from telegram.request import HTTPXRequest
+from telegram.error import TimedOut, NetworkError
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -36,6 +41,68 @@ logger = logging.getLogger(__name__)
 
 # Глобальний словник для зберігання останніх дій користувачів
 user_last_actions = {}
+
+# Глобальна змінна для сімейного бюджету
+family_budget_amount = 0
+
+# Клас для моніторингу з'єднань
+class ConnectionMonitor:
+    def __init__(self):
+        self.start_time = time.time()
+        self.request_count = 0
+        self.error_count = 0
+    
+    def log_request(self):
+        self.request_count += 1
+        if self.request_count % 100 == 0:
+            uptime = time.time() - self.start_time
+            logger.info(f"📊 Статистика: {self.request_count} запитів, "
+                       f"{self.error_count} помилок, uptime: {uptime/3600:.1f}h")
+    
+    def log_error(self):
+        self.error_count += 1
+
+# Створюємо глобальний монітор
+monitor = ConnectionMonitor()
+
+# Функція для безпечного виконання операцій бота
+async def safe_bot_operation(operation, max_retries=3):
+    """Безпечне виконання операцій бота з retry логікою"""
+    for attempt in range(max_retries):
+        try:
+            monitor.log_request()
+            return await operation()
+        except TimedOut as e:
+            monitor.log_error()
+            logger.warning(f"Timeout на спробі {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+            else:
+                logger.error("Всі спроби вичерпано")
+                raise
+        except NetworkError as e:
+            monitor.log_error()
+            logger.warning(f"Мережева помилка на спробі {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)
+            else:
+                raise
+
+# Безпечна відправка повідомлень
+async def safe_send_message(update, context, text, **kwargs):
+    """Безпечна відправка повідомлень"""
+    async def send_operation():
+        return await update.message.reply_text(text, **kwargs)
+    
+    try:
+        return await safe_bot_operation(send_operation)
+    except Exception as e:
+        logger.error(f"Не вдалося відправити повідомлення: {e}")
+        # Fallback - спробувати простий текст
+        try:
+            return await update.message.reply_text("❌ Виникла помилка при обробці запиту")
+        except:
+            logger.error("Критична помилка з'єднання з Telegram")
 
 # Функція для знаходження FFmpeg
 def get_ffmpeg_path():
@@ -78,6 +145,33 @@ try:
 except Exception as e:
     logger.error(f"Помилка підключення до Google Speech-to-Text API: {e}")
     raise
+
+def create_application():
+    """Створює Application з покращеними налаштуваннями"""
+    # Отримуємо налаштування з змінних середовища або використовуємо значення за замовчуванням
+    pool_size = int(os.getenv('TELEGRAM_POOL_SIZE', 8))
+    pool_timeout = int(os.getenv('TELEGRAM_TIMEOUT', 20))
+    read_timeout = int(os.getenv('TELEGRAM_READ_TIMEOUT', 30))
+    
+    # Налаштування HTTP запитів
+    request = HTTPXRequest(
+        pool_timeout=pool_timeout,        # Збільшуємо timeout пулу до 20 сек
+        connection_pool_size=pool_size,   # Збільшуємо розмір пулу з'єднань
+        read_timeout=read_timeout,        # Timeout для читання відповідей
+        write_timeout=30,                 # Timeout для відправки запитів
+        connect_timeout=10                # Timeout для підключення
+    )
+    
+    # Створення Application з кастомними налаштуваннями
+    application = Application.builder().token(TOKEN).request(request).build()
+    
+    logger.info(f"Application створено з pool_size={pool_size}, pool_timeout={pool_timeout}")
+    return application
+
+def signal_handler(signum, frame):
+    """Обробник сигналів для graceful shutdown"""
+    logger.info("🛑 Отримано сигнал зупинки. Завершення роботи...")
+    sys.exit(0)
 
 def get_all_expenses():
     """Отримує всі записи витрат з Google Sheets"""
@@ -223,34 +317,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/undo - скасувати останній запис\n"
         "/ignore - позначити як ігнорований"
     )
-    await update.message.reply_text(welcome_message)
+    await safe_send_message(update, context, welcome_message)
+
 async def stats_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика за сьогодні"""
     expenses = get_all_expenses()
     filtered_expenses = filter_expenses_by_period(expenses, "day")
     message = generate_stats_message(filtered_expenses, "сьогодні")
-    await update.message.reply_text(message)
+    await safe_send_message(update, context, message)
 
 async def stats_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика за тиждень"""
     expenses = get_all_expenses()
     filtered_expenses = filter_expenses_by_period(expenses, "week")
     message = generate_stats_message(filtered_expenses, "поточний тиждень")
-    await update.message.reply_text(message)
+    await safe_send_message(update, context, message)
 
 async def stats_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика за місяць"""
     expenses = get_all_expenses()
     filtered_expenses = filter_expenses_by_period(expenses, "month")
     message = generate_stats_message(filtered_expenses, "поточний місяць")
-    await update.message.reply_text(message)
+    await safe_send_message(update, context, message)
 
 async def stats_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика за рік"""
     expenses = get_all_expenses()
     filtered_expenses = filter_expenses_by_period(expenses, "year")
     message = generate_stats_message(filtered_expenses, "поточний рік")
-    await update.message.reply_text(message)
+    await safe_send_message(update, context, message)
 
 async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Особиста статистика користувача за місяць"""
@@ -260,7 +355,7 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     expenses = get_all_expenses()
     filtered_expenses = filter_expenses_by_period(expenses, "month", user_name)
     message = generate_stats_message(filtered_expenses, "поточний місяць", user_name)
-    await update.message.reply_text(message)
+    await safe_send_message(update, context, message)
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Стара функція статистики - тепер перенаправляє на stats_month"""
@@ -272,7 +367,7 @@ async def top_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     filtered_expenses = filter_expenses_by_period(expenses, "month")
     
     if not filtered_expenses:
-        await update.message.reply_text("Немає витрат за поточний місяць.")
+        await safe_send_message(update, context, "Немає витрат за поточний місяць.")
         return
     
     # Рахуємо по категоріях
@@ -289,21 +384,21 @@ async def top_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
         emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
         message += f"{emoji} {category}: {amount:.2f} грн ({percentage:.1f}%)\n"
     
-    await update.message.reply_text(message)
+    await safe_send_message(update, context, message)
 
 async def undo_last_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Скасовує останню дію користувача"""
     user = update.message.from_user
     
     if user.id not in user_last_actions:
-        await update.message.reply_text("❌ Немає дій для скасування.")
+        await safe_send_message(update, context, "❌ Немає дій для скасування.")
         return
     
     last_action = user_last_actions[user.id]
     
     # Перевіряємо, чи не застара дія (більше 10 хвилин)
     if datetime.datetime.now() - last_action['timestamp'] > timedelta(minutes=10):
-        await update.message.reply_text("❌ Час для скасування минув (максимум 10 хвилин).")
+        await safe_send_message(update, context, "❌ Час для скасування минув (максимум 10 хвилин).")
         return
     
     try:
@@ -315,7 +410,7 @@ async def undo_last_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         values = result.get('values', [])
         if not values:
-            await update.message.reply_text("❌ Таблиця порожня.")
+            await safe_send_message(update, context, "❌ Таблиця порожня.")
             return
         
         # Шукаємо запис для видалення
@@ -332,7 +427,7 @@ async def undo_last_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     break
         
         if row_to_delete is None:
-            await update.message.reply_text("❌ Запис не знайдено для скасування.")
+            await safe_send_message(update, context, "❌ Запис не знайдено для скасування.")
             return
         
         # Видаляємо рядок
@@ -355,7 +450,7 @@ async def undo_last_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Видаляємо з кешу
         del user_last_actions[user.id]
         
-        await update.message.reply_text(
+        await safe_send_message(update, context,
             f"✅ Запис скасовано:\n"
             f"📂 Категорія: {last_action['category']}\n"
             f"💰 Сума: {last_action['amount']:.2f} грн"
@@ -363,21 +458,21 @@ async def undo_last_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Помилка скасування: {e}")
-        await update.message.reply_text("❌ Помилка при скасуванні запису.")
+        await safe_send_message(update, context, "❌ Помилка при скасуванні запису.")
 
 async def mark_as_ignored(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Позначає останній запис як ігнорований для статистики"""
     user = update.message.from_user
     
     if user.id not in user_last_actions:
-        await update.message.reply_text("❌ Немає дій для позначення.")
+        await safe_send_message(update, context, "❌ Немає дій для позначення.")
         return
     
     last_action = user_last_actions[user.id]
     
     # Перевіряємо, чи не застара дія
     if datetime.datetime.now() - last_action['timestamp'] > timedelta(minutes=10):
-        await update.message.reply_text("❌ Час для позначення минув (максимум 10 хвилин).")
+        await safe_send_message(update, context, "❌ Час для позначення минув (максимум 10 хвилин).")
         return
     
     try:
@@ -389,7 +484,7 @@ async def mark_as_ignored(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         values = result.get('values', [])
         if not values:
-            await update.message.reply_text("❌ Таблиця порожня.")
+            await safe_send_message(update, context, "❌ Таблиця порожня.")
             return
         
         # Шукаємо запис для позначення
@@ -406,7 +501,7 @@ async def mark_as_ignored(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     break
         
         if row_to_update is None:
-            await update.message.reply_text("❌ Запис не знайдено для позначення.")
+            await safe_send_message(update, context, "❌ Запис не знайдено для позначення.")
             return
         
         # Додаємо префікс [IGNORED] до коментаря
@@ -425,7 +520,7 @@ async def mark_as_ignored(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Видаляємо з кешу
         del user_last_actions[user.id]
         
-        await update.message.reply_text(
+        await safe_send_message(update, context,
             f"🔕 Запис позначено як ігнорований:\n"
             f"📂 Категорія: {last_action['category']}\n"
             f"💰 Сума: {last_action['amount']:.2f} грн\n"
@@ -434,7 +529,7 @@ async def mark_as_ignored(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Помилка позначення: {e}")
-        await update.message.reply_text("❌ Помилка при позначенні запису.")
+        await safe_send_message(update, context, "❌ Помилка при позначенні запису.")
 
 async def show_recent_expenses(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показує останні 5 записів користувача"""
@@ -450,7 +545,7 @@ async def show_recent_expenses(update: Update, context: ContextTypes.DEFAULT_TYP
         
         values = result.get('values', [])
         if not values:
-            await update.message.reply_text("❌ Немає записів.")
+            await safe_send_message(update, context, "❌ Немає записів.")
             return
         
         # Фільтруємо записи користувача
@@ -471,7 +566,7 @@ async def show_recent_expenses(update: Update, context: ContextTypes.DEFAULT_TYP
                     continue
         
         if not user_expenses:
-            await update.message.reply_text("❌ У вас немає записів.")
+            await safe_send_message(update, context, "❌ У вас немає записів.")
             return
         
         # Сортуємо за датою (найновіші спочатку) і беремо останні 5
@@ -489,16 +584,11 @@ async def show_recent_expenses(update: Update, context: ContextTypes.DEFAULT_TYP
         message += "💡 Використайте /undo для скасування останньої дії\n"
         message += "💡 Використайте /ignore для позначення як ігнорований"
         
-        await update.message.reply_text(message)
+        await safe_send_message(update, context, message)
         
     except Exception as e:
         logger.error(f"Помилка отримання записів: {e}")
-        await update.message.reply_text("❌ Помилка при отриманні записів.")
-
-# Додайте після функції show_recent_expenses та перед async def handle_message
-
-# Глобальна змінна для сімейного бюджету
-family_budget_amount = 0
+        await safe_send_message(update, context, "❌ Помилка при отриманні записів.")
 
 async def compare_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Порівняння витрат між користувачами за місяць"""
@@ -506,7 +596,7 @@ async def compare_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     filtered_expenses = filter_expenses_by_period(expenses, "month")
     
     if not filtered_expenses:
-        await update.message.reply_text("Немає витрат за поточний місяць.")
+        await safe_send_message(update, context, "Немає витрат за поточний місяць.")
         return
     
     # Збираємо статистику по користувачах
@@ -553,7 +643,7 @@ async def compare_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += ", ".join([f"{cat} ({amt:.0f}₴)" for cat, amt in top_categories])
         message += "\n\n"
     
-    await update.message.reply_text(message)
+    await safe_send_message(update, context, message)
 
 async def family_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Сімейний бюджет з детальною розбивкою"""
@@ -568,7 +658,7 @@ async def family_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     month_total = sum(exp['amount'] for exp in month_expenses)
     
     if not month_expenses:
-        await update.message.reply_text("Немає витрат за поточний місяць.")
+        await safe_send_message(update, context, "Немає витрат за поточний місяць.")
         return
     
     # По користувачах за місяць
@@ -603,7 +693,7 @@ async def family_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
         percentage = (amount / month_total) * 100
         message += f"• {category}: {amount:.2f} грн ({percentage:.1f}%)\n"
     
-    await update.message.reply_text(message)
+    await safe_send_message(update, context, message)
 
 async def who_spent_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Хто більше витратив за період"""
@@ -620,7 +710,7 @@ async def who_spent_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not filtered_expenses:
         period_names = {"day": "сьогодні", "week": "тиждень", "month": "місяць", "year": "рік"}
-        await update.message.reply_text(f"Немає витрат за {period_names.get(period, period)}.")
+        await safe_send_message(update, context, f"Немає витрат за {period_names.get(period, period)}.")
         return
     
     # Рахуємо по користувачах
@@ -630,7 +720,7 @@ async def who_spent_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users[user] = users.get(user, 0) + exp['amount']
     
     if len(users) < 2:
-        await update.message.reply_text("Потрібно мінімум 2 користувачі для порівняння.")
+        await safe_send_message(update, context, "Потрібно мінімум 2 користувачі для порівняння.")
         return
     
     # Сортуємо користувачів
@@ -655,14 +745,14 @@ async def who_spent_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if difference > 0:
             message += f"\n💡 {sorted_users[0][0]} витратив більше на {difference:.2f} грн"
     
-    await update.message.reply_text(message)
+    await safe_send_message(update, context, message)
 
 async def set_family_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Встановлення сімейного бюджету"""
     global family_budget_amount
     
     if not context.args:
-        await update.message.reply_text(
+        await safe_send_message(update, context,
             "💰 Встановіть сімейний бюджет:\n"
             "/budget 15000 - встановити бюджет 15000 грн на місяць\n"
             "/budget - подивитись поточний бюджет"
@@ -673,20 +763,20 @@ async def set_family_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
         budget_amount = float(context.args[0])
         family_budget_amount = budget_amount
         
-        await update.message.reply_text(
+        await safe_send_message(update, context,
             f"💰 Сімейний бюджет встановлено: {budget_amount:.2f} грн на місяць\n"
             f"💡 Використайте /budget_status для перевірки виконання бюджету"
         )
         
     except ValueError:
-        await update.message.reply_text("❌ Введіть коректну суму. Приклад: /budget 15000")
+        await safe_send_message(update, context, "❌ Введіть коректну суму. Приклад: /budget 15000")
 
 async def budget_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статус виконання сімейного бюджету"""
     global family_budget_amount
     
     if family_budget_amount == 0:
-        await update.message.reply_text(
+        await safe_send_message(update, context,
             "❌ Бюджет не встановлено.\n"
             "Використайте /budget СУМА для встановлення бюджету."
         )
@@ -725,12 +815,12 @@ async def budget_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bar = "█" * filled_length + "░" * (progress_length - filled_length)
     message += f"\n📊 Прогрес: {bar} {percentage:.1f}%"
     
-    await update.message.reply_text(message)    
+    await safe_send_message(update, context, message)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user = update.message.from_user
-    await process_and_save(text, user, update)
+    await process_and_save(text, user, update, context)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
@@ -738,7 +828,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Перевіряємо чи доступний FFmpeg
     if FFMPEG_PATH is None:
-        await update.message.reply_text(
+        await safe_send_message(update, context,
             "❌ Обробка голосових повідомлень недоступна.\n"
             "FFmpeg не встановлено. Використовуйте текстові повідомлення."
         )
@@ -746,13 +836,16 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Перевіряємо тривалість голосового повідомлення
     if voice.duration > MAX_VOICE_DURATION:
-        await update.message.reply_text(
+        await safe_send_message(update, context,
             f"❌ Голосове повідомлення занадто довге. Максимальна тривалість: {MAX_VOICE_DURATION} секунд."
         )
         return
     
     # Відправляємо повідомлення про початок обробки
-    processing_message = await update.message.reply_text("🎤 Обробляю голосове повідомлення...")
+    async def send_processing_message():
+        return await update.message.reply_text("🎤 Обробляю голосове повідомлення...")
+    
+    processing_message = await safe_bot_operation(send_processing_message)
     
     try:
         # Завантажуємо голосове повідомлення
@@ -770,7 +863,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 FFMPEG_PATH, "-i", ogg_path, "-ar", "16000", "-ac", "1", wav_path, "-y"
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except subprocess.CalledProcessError as e:
-            await processing_message.edit_text("❌ Помилка конвертації аудіо.")
+            async def edit_message():
+                return await processing_message.edit_text("❌ Помилка конвертації аудіо.")
+            await safe_bot_operation(edit_message)
             logger.error(f"ffmpeg error: {e}")
             os.unlink(ogg_path)
             return
@@ -796,7 +891,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = speech_client.recognize(config=config, audio=audio)
         
         if not response.results:
-            await processing_message.edit_text("❌ Не вдалося розпізнати голосове повідомлення. Спробуйте говорити чіткіше.")
+            async def edit_message():
+                return await processing_message.edit_text("❌ Не вдалося розпізнати голосове повідомлення. Спробуйте говорити чіткіше.")
+            await safe_bot_operation(edit_message)
             return
         
         recognized_text = response.results[0].alternatives[0].transcript
@@ -805,17 +902,21 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Розпізнано: '{recognized_text}' (впевненість: {confidence:.2f})")
         
         # Видаляємо повідомлення про обробку
-        await processing_message.delete()
+        async def delete_message():
+            return await processing_message.delete()
+        await safe_bot_operation(delete_message)
         
         # Показуємо розпізнаний текст користувачу
-        await update.message.reply_text(f"🎤 Розпізнано: \"{recognized_text}\"")
+        await safe_send_message(update, context, f"🎤 Розпізнано: \"{recognized_text}\"")
         
         # Обробляємо розпізнаний текст
-        await process_and_save(recognized_text, user, update)
+        await process_and_save(recognized_text, user, update, context)
         
     except Exception as e:
         logger.error(f"Google Speech-to-Text error: {e}")
-        await processing_message.edit_text("❌ Помилка при розпізнаванні голосу. Спробуйте пізніше.")
+        async def edit_message():
+            return await processing_message.edit_text("❌ Помилка при розпізнаванні голосу. Спробуйте пізніше.")
+        await safe_bot_operation(edit_message)
 
 def parse_expense_text(text):
     """Розбирає текст витрати з підтримкою різних форматів"""
@@ -841,12 +942,12 @@ def parse_expense_text(text):
     
     return None, None, None
 
-async def process_and_save(text, user, update):
+async def process_and_save(text, user, update, context):
     """Обробляє та зберігає витрату"""
     category, amount, comment = parse_expense_text(text)
     
     if category is None or amount is None:
-        await update.message.reply_text(
+        await safe_send_message(update, context,
             "❌ Невірний формат. Введи у форматі:\n"
             "Категорія Сума Коментар\n"
             "Приклад: Їжа 250 Обід"
@@ -854,7 +955,7 @@ async def process_and_save(text, user, update):
         return
 
     if amount <= 0:
-        await update.message.reply_text("❌ Сума має бути більше нуля.")
+        await safe_send_message(update, context, "❌ Сума має бути більше нуля.")
         return
 
     date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -897,14 +998,14 @@ async def process_and_save(text, user, update):
         
         success_message += f"\n\n💡 Якщо помилились, використайте /undo для скасування"
             
-        await update.message.reply_text(success_message)
+        await safe_send_message(update, context, success_message)
         
     except Exception as e:
         logger.error(f"Детальна помилка при записі до Google Sheets: {e}")
         logger.error(f"Тип помилки: {type(e).__name__}")
-        await update.message.reply_text("❌ Виникла помилка при записі даних. Перевірте доступ до таблиці.")
+        await safe_send_message(update, context, "❌ Виникла помилка при записі даних. Перевірте доступ до таблиці.")
 
-def test_sheets_access():
+async def test_sheets_access():
     """Тестує доступ до Google Sheets"""
     try:
         result = sheet.values().get(
@@ -920,24 +1021,18 @@ def test_sheets_access():
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробник помилок"""
     logger.error(f'Update {update} caused error {context.error}')
-
-# Замініть функцію main() в кінці файлу finedot_bot.py на цю:
-
-async def main():
-    """Запускає бота"""
-    if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        logger.error(f"Файл сервісного акаунту не знайдено: {SERVICE_ACCOUNT_FILE}")
-        return
     
-    # Тестуємо доступ до Google Sheets
-    try:
-        test_sheets_access()
-    except Exception as e:
-        logger.error(f"Не вдалося протестувати доступ до Google Sheets: {e}")
-    
-    app = ApplicationBuilder().token(TOKEN).build()
+    # Спробуємо відправити повідомлення про помилку користувачу
+    if update and update.effective_message:
+        try:
+            await safe_send_message(update, context, 
+                "❌ Виникла тимчасова помилка. Спробуйте ще раз через кілька секунд.")
+        except Exception as e:
+            logger.error(f"Не вдалося відправити повідомлення про помилку: {e}")
 
-    # Додаємо обробники команд
+def add_handlers(app):
+    """Додає всі обробники до додатку"""
+    # Основні команди
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("today", stats_today))
@@ -947,12 +1042,12 @@ async def main():
     app.add_handler(CommandHandler("mystats", my_stats))
     app.add_handler(CommandHandler("top", top_categories))
     
-    # КОМАНДИ управління записами
+    # Команди управління записами
     app.add_handler(CommandHandler("undo", undo_last_action))
     app.add_handler(CommandHandler("ignore", mark_as_ignored))
     app.add_handler(CommandHandler("recent", show_recent_expenses))
     
-    # НОВІ КОМАНДИ для пар
+    # Команди для пар
     app.add_handler(CommandHandler("compare", compare_users))
     app.add_handler(CommandHandler("family", family_budget))
     app.add_handler(CommandHandler("whospent", who_spent_more))
@@ -966,11 +1061,35 @@ async def main():
     # Додаємо обробник помилок
     app.add_error_handler(error_handler)
 
-    logger.info("Бот запускається...")
+async def main():
+    """Основна функція запуску бота"""
+    logger.info("🚀 Запуск FinDotBot...")
+    
+    # Налаштування обробників сигналів
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    if not os.path.exists(SERVICE_ACCOUNT_FILE):
+        logger.error(f"Файл сервісного акаунту не знайдено: {SERVICE_ACCOUNT_FILE}")
+        return
+    
+    # Тестуємо доступ до Google Sheets
+    try:
+        await test_sheets_access()
+    except Exception as e:
+        logger.error(f"Не вдалося протестувати доступ до Google Sheets: {e}")
+    
+    # Створення Application з покращеними налаштуваннями
+    app = create_application()
+    
+    # Додавання обробників команд
+    add_handlers(app)
+    
+    logger.info("✅ FinDotBot запущено та очікує повідомлення...")
     if FFMPEG_PATH:
-        logger.info("Голосові повідомлення увімкнені")
+        logger.info("🎤 Голосові повідомлення увімкнені")
     else:
-        logger.warning("Голосові повідомлення вимкнені (FFmpeg не знайдено)")
+        logger.warning("⚠️ Голосові повідомлення вимкнені (FFmpeg не знайдено)")
     
     # ВИПРАВЛЕНИЙ ЗАПУСК - замість app.run_polling()
     try:
@@ -994,9 +1113,5 @@ async def main():
         except Exception as e:
             logger.error(f"Помилка зупинки бота: {e}")
 
-# ВАЖЛИВО: Видаліть ці рядки в кінці файлу, якщо вони є:
-# if __name__ == '__main__':
-#     main()
-# або
-# if __name__ == '__main__':
-#     asyncio.run(main())
+if __name__ == '__main__':
+    asyncio.run(main())
