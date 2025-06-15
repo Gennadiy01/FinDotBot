@@ -28,5 +28,13 @@ MAX_VOICE_DURATION = int(os.getenv('MAX_VOICE_DURATION', '60'))
 # Logging
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
-# Health check endpoint (для хмарних платформ)
-HEALTH_CHECK_PORT = int(os.getenv('PORT', '10000'))
+# Health Check & Anti-Sleep
+HEALTH_CHECK_PORT = int(os.getenv('PORT', '10000'))  # Зберігаємо вашу логіку з PORT
+RENDER_URL = os.getenv('RENDER_URL', 'https://findotbot.onrender.com')
+SELF_PING_INTERVAL = int(os.getenv('SELF_PING_INTERVAL', '600'))  # 10 хвилин
+ENABLE_SELF_PING = os.getenv('ENABLE_SELF_PING', 'true').lower() == 'true'
+
+# Telegram Connection Settings (нові параметри для стабільності)
+TELEGRAM_POOL_SIZE = int(os.getenv('TELEGRAM_POOL_SIZE', '8'))
+TELEGRAM_TIMEOUT = int(os.getenv('TELEGRAM_TIMEOUT', '20'))
+TELEGRAM_READ_TIMEOUT = int(os.getenv('TELEGRAM_READ_TIMEOUT', '30'))
