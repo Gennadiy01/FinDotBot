@@ -75,8 +75,7 @@ def create_persistent_keyboard():
     return ReplyKeyboardMarkup(
         keyboard, 
         resize_keyboard=True,  # Кнопки будуть компактними
-        one_time_keyboard=False,  # Клавіатура залишається після натискання
-        persistent=True  # Клавіатура завжди видима
+        one_time_keyboard=False  # Клавіатура залишається після натискання
     )
 
 def remove_keyboard():
