@@ -1090,25 +1090,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === ФУНКЦІЇ ОБРОБКИ ТЕКСТІВ ТА ЗБЕРЕЖЕННЯ ===
 
 def parse_expense_text(text):
-    """Розбирає текст витрати з підтримкою різних форматів"""
+    """Розбирає текст витрати з підтримкою багатослівних категорій (до 3 слів)"""
     text = text.strip()
     
-    parts = text.split(maxsplit=2)
-    if len(parts) >= 2:
-        category = parts[0]
-        amount_str = parts[1]
-        comment = parts[2] if len(parts) == 3 else ""
-        
-        amount_match = re.search(r'(\d+(?:[.,]\d+)?)', amount_str)
-        if amount_match:
-            amount_str = amount_match.group(1).replace(',', '.')
-            try:
-                amount = float(amount_str)
-                return category, amount, comment
-            except ValueError:
-                pass
+    # Шукаємо перше число в тексті (це буде сума)
+    amount_pattern = r'\b(\d+(?:[.,]\d+)?)\b'
+    amount_match = re.search(amount_pattern, text)
     
-    return None, None, None
+    if not amount_match:
+        return None, None, None
+    
+    # Позиція де знайшли суму
+    amount_start = amount_match.start()
+    amount_str = amount_match.group(1).replace(',', '.')
+    
+    try:
+        amount = float(amount_str)
+    except ValueError:
+        return None, None, None
+    
+    # Все до суми - це потенційна категорія
+    category_text = text[:amount_start].strip()
+    
+    # Все після суми - це коментар
+    comment_start = amount_match.end()
+    comment = text[comment_start:].strip()
+    
+    # Обробляємо категорію - не більше 3 слів
+    if not category_text:
+        return None, None, None
+    
+    category_words = category_text.split()
+    
+    # Обмежуємо до 3 слів максимум
+    if len(category_words) > 3:
+        category = ' '.join(category_words[:3])
+        # Решту слів додаємо до коментаря
+        remaining_words = ' '.join(category_words[3:])
+        if comment:
+            comment = remaining_words + ' ' + comment
+        else:
+            comment = remaining_words
+    else:
+        category = category_text
+    
+    # Валідація суми
+    if amount <= 0:
+        return None, None, None
+    
+    return category, amount, comment
 
 async def process_and_save(text, user, update, context):
     """Обробляє та зберігає витрату"""
