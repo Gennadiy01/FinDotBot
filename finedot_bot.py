@@ -70,7 +70,7 @@ monitor = ConnectionMonitor()
 def create_persistent_keyboard():
     """Створює постійну reply клавіатуру з кнопкою Меню"""
     keyboard = [
-        [KeyboardButton("📋 Меню")]
+        [KeyboardButton("🟩 📋 МЕНЮ 📋 🟩")]
     ]
     return ReplyKeyboardMarkup(
         keyboard, 
@@ -1080,7 +1080,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     
     # Перевіряємо чи це натискання кнопки "Меню"
-    if text == "📋 Меню":
+    if text == "🟩 📋 МЕНЮ 📋 🟩":
         await show_main_menu(update, context)
         return
     
