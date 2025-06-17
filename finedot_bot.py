@@ -16,6 +16,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from telegram.helpers import escape_markdown
 from telegram.request import HTTPXRequest
 from telegram.error import TimedOut, NetworkError
+from telegram.error import Conflict
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -154,25 +155,63 @@ def create_management_menu():
 
 # Функція для безпечного виконання операцій бота
 async def safe_bot_operation(operation, max_retries=3):
-    """Безпечне виконання операцій бота з retry логікою"""
+    """Безпечне виконання операцій бота з покращеною retry логікою"""
     for attempt in range(max_retries):
         try:
             monitor.log_request()
             return await operation()
-        except TimedOut as e:
+            
+        except Exception as e:
             monitor.log_error()
-            logger.warning(f"Timeout на спробі {attempt + 1}: {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+            error_msg = str(e).lower()
+            
+            # Обробка конфліктів
+            if "conflict" in error_msg or "terminated by other getupdates" in error_msg:
+                logger.warning(f"🔄 Конфлікт на спробі {attempt + 1}: {e}")
+                
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt + 5  # 5, 7, 11 секунд
+                    logger.info(f"⏰ Чекаємо {wait_time} секунд перед повтором...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error("❌ Всі спроби вичерпано для операції (конфлікт)")
+                    raise
+            
+            # Обробка timeout помилок
+            elif "timeout" in error_msg or "timed out" in error_msg:
+                logger.warning(f"⏰ Timeout на спробі {attempt + 1}: {e}")
+                
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                else:
+                    logger.error("❌ Всі спроби вичерпано (timeout)")
+                    raise
+            
+            # Обробка мережевих помилок
+            elif any(keyword in error_msg for keyword in ["network", "connection", "unreachable", "failed to connect"]):
+                logger.warning(f"🌐 Мережева помилка на спробі {attempt + 1}: {e}")
+                
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                else:
+                    logger.error("❌ Всі спроби вичерпано (мережа)")
+                    raise
+            
+            # Обробка rate limit помилок
+            elif "rate limit" in error_msg or "too many requests" in error_msg:
+                logger.warning(f"🚦 Rate limit на спробі {attempt + 1}: {e}")
+                
+                if attempt < max_retries - 1:
+                    wait_time = 5 * (attempt + 1)  # 5, 10, 15 секунд
+                    logger.info(f"⏰ Rate limit: чекаємо {wait_time} секунд...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error("❌ Всі спроби вичерпано (rate limit)")
+                    raise
+            
+            # Інші помилки - не повторюємо
             else:
-                logger.error("Всі спроби вичерпано")
-                raise
-        except NetworkError as e:
-            monitor.log_error()
-            logger.warning(f"Мережева помилка на спробі {attempt + 1}: {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(2 ** attempt)
-            else:
+                logger.error(f"❌ Неочікувана помилка в операції: {e}")
                 raise
 
 # Безпечна відправка повідомлень з постійною клавіатурою
@@ -1814,69 +1853,177 @@ def add_handlers(app):
     # Додаємо обробник помилок
     app.add_error_handler(error_handler)
 
-# === ОСНОВНА ФУНКЦІЯ ЗАПУСКУ ===
+# === ПОКРАЩЕННЯ 1: Функція для безпечного polling ===
+
+# === ДОДАЙТЕ ЦІ ФУНКЦІЇ ПЕРЕД async def main(): ===
+
+async def safe_start_polling(app, max_retries=5):
+    """Безпечний запуск polling з автоматичним відновленням після конфліктів"""
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            logger.info(f"🔄 Спроба запуску polling #{retry_count + 1}")
+            
+            await app.updater.start_polling(
+                drop_pending_updates=True,
+                bootstrap_retries=3,
+                timeout=20,
+                read_timeout=25,
+                write_timeout=25,
+                connect_timeout=15,
+                allowed_updates=["message", "callback_query"]
+            )
+            
+            logger.info("✅ Polling запущено успішно")
+            return True
+            
+        except Exception as e:
+            # Перевіряємо чи це конфлікт
+            error_msg = str(e).lower()
+            if "conflict" in error_msg or "terminated by other getupdates" in error_msg:
+                retry_count += 1
+                wait_time = min(30 * retry_count, 120)  # Exponential backoff: 30, 60, 90, 120 сек
+                
+                logger.warning(f"⚠️ Конфлікт з Telegram API (спроба {retry_count}/{max_retries})")
+                logger.warning(f"🕐 Чекаємо {wait_time} секунд перед наступною спробою...")
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error("❌ Всі спроби вичерпано, не вдалося запустити polling")
+                    raise
+            else:
+                logger.error(f"❌ Неочікувана помилка при запуску polling: {e}")
+                raise
+    
+    return False
+
+async def graceful_shutdown(app):
+    """Коректне завершення роботи бота з очищенням ресурсів"""
+    logger.info("🛑 Початок graceful shutdown...")
+    
+    try:
+        # Зупиняємо updater
+        if hasattr(app, 'updater') and app.updater.running:
+            logger.info("🔄 Зупиняємо updater...")
+            await app.updater.stop()
+            logger.info("✅ Updater зупинено")
+        
+        # Зупиняємо application
+        if hasattr(app, 'running') and app.running:
+            logger.info("🔄 Зупиняємо application...")
+            await app.stop()
+            logger.info("✅ Application зупинено")
+        
+        # Завершуємо application
+        logger.info("🔄 Завершуємо application...")
+        await app.shutdown()
+        logger.info("✅ Application завершено")
+        
+    except Exception as e:
+        logger.error(f"❌ Помилка при graceful shutdown: {e}")
+    
+    logger.info("✅ Graceful shutdown завершено")
 
 async def main():
-    """Основна функція запуску бота"""
-    logger.info("🚀 Запуск FinDotBot...")
+    """Основна функція запуску бота з покращеною обробкою конфліктів"""
+    logger.info("🚀 Запуск FinDotBot з покращеною обробкою конфліктів...")
     
     # Налаштування обробників сигналів
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
+    def signal_handler_improved(signum, frame):
+        logger.info(f"🛑 Отримано сигнал {signum}. Graceful shutdown...")
+        # Встановлюємо флаг для коректного завершення
+        asyncio.create_task(cleanup_and_exit())
+    
+    async def cleanup_and_exit():
+        if 'app' in locals():
+            await graceful_shutdown(app)
+        sys.exit(0)
+    
+    signal.signal(signal.SIGTERM, signal_handler_improved)
+    signal.signal(signal.SIGINT, signal_handler_improved)
     
     if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        logger.error(f"Файл сервісного акаунту не знайдено: {SERVICE_ACCOUNT_FILE}")
+        logger.error(f"❌ Файл сервісного акаунту не знайдено: {SERVICE_ACCOUNT_FILE}")
         return
     
     # Тестуємо доступ до Google Sheets
     try:
         await test_sheets_access()
     except Exception as e:
-        logger.error(f"Не вдалося протестувати доступ до Google Sheets: {e}")
+        logger.error(f"❌ Не вдалося протестувати доступ до Google Sheets: {e}")
     
     # Створення Application з покращеними налаштуваннями
     app = create_application()
     
-    # Додавання обробників команд
-    add_handlers(app)
-    
-    logger.info("✅ FinDotBot запущено та очікує повідомлення...")
-    if FFMPEG_PATH:
-        logger.info("🎤 Голосові повідомлення увімкнені")
-    else:
-        logger.warning("⚠️ Голосові повідомлення вимкнені (FFmpeg не знайдено)")
-    
-    # ВИПРАВЛЕНИЙ ЗАПУСК з очищенням конфліктів
     try:
+        # Ініціалізація
+        logger.info("🔄 Ініціалізація application...")
         await app.initialize()
         await app.start()
         
-        # Додаємо затримку перед polling для очищення конфліктів
-        await asyncio.sleep(3)
-        logger.info("🔄 Починаємо polling після очищення...")
+        # Додавання обробників команд
+        add_handlers(app)
         
-        await app.updater.start_polling(
-            drop_pending_updates=True,
-            bootstrap_retries=5,  # Збільшуємо кількість спроб
-            timeout=30,  # Збільшуємо timeout
-            allowed_updates=["message", "callback_query"]  # Обмежуємо типи updates
-        )
+        logger.info("✅ FinDotBot ініціалізовано та готовий до роботи...")
+        if FFMPEG_PATH:
+            logger.info("🎤 Голосові повідомлення увімкнені")
+        else:
+            logger.warning("⚠️ Голосові повідомлення вимкнені (FFmpeg не знайдено)")
         
-        # Тримаємо бота живим
-        while True:
-            await asyncio.sleep(1)
+        # БЕЗПЕЧНИЙ ЗАПУСК POLLING
+        polling_started = await safe_start_polling(app)
+        
+        if polling_started:
+            logger.info("🎯 Бот працює стабільно та очікує повідомлення...")
             
+            # Основний цикл роботи з моніторингом
+            error_count = 0
+            max_errors = 10
+            
+            while True:
+                try:
+                    await asyncio.sleep(5)  # Перевірка кожні 5 секунд
+                    
+                    # Перевіряємо чи updater ще працює
+                    if hasattr(app, 'updater') and not app.updater.running:
+                        logger.warning("⚠️ Updater зупинився, спробуємо перезапустити...")
+                        await safe_start_polling(app)
+                    
+                    # Скидаємо лічільник помилок при успішній роботі
+                    error_count = 0
+                    
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if "conflict" in error_msg or "terminated by other getupdates" in error_msg:
+                        error_count += 1
+                        logger.warning(f"⚠️ Конфлікт у головному циклі ({error_count}/{max_errors})")
+                        
+                        if error_count >= max_errors:
+                            logger.error("❌ Забагато конфліктів, завершуємо роботу")
+                            break
+                        
+                        await asyncio.sleep(30)  # Чекаємо перед наступною спробою
+                    else:
+                        error_count += 1
+                        logger.error(f"❌ Помилка у головному циклі: {e} ({error_count}/{max_errors})")
+                        
+                        if error_count >= max_errors:
+                            logger.error("❌ Забагато помилок, завершуємо роботу")
+                            break
+                        
+                        await asyncio.sleep(10)
+        else:
+            logger.error("❌ Не вдалося запустити polling")
+            
+    except KeyboardInterrupt:
+        logger.info("🛑 Отримано сигнал переривання")
     except Exception as e:
-        logger.error(f"Помилка запуску бота: {e}")
-        raise
+        logger.error(f"❌ Критична помилка: {e}")
     finally:
-        # Коректне зупинення
-        try:
-            await app.updater.stop()
-            await app.stop()
-            await app.shutdown()
-        except Exception as e:
-            logger.error(f"Помилка зупинки бота: {e}")
+        # Завжди виконуємо graceful shutdown
+        await graceful_shutdown(app)
 
 if __name__ == '__main__':
     asyncio.run(main())
