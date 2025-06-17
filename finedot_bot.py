@@ -1195,7 +1195,11 @@ async def process_and_save(text, user, update, context):
         await safe_send_message(update, context, "❌ Сума має бути більше нуля.")
         return
 
-    date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # ВИПРАВЛЕННЯ ЧАСОВОГО ПОЯСУ - Київський час (UTC + 3)
+    utc_now = datetime.datetime.utcnow()
+    kyiv_time = utc_now + timedelta(hours=3)  # UTC + 3 години = Київський час
+    date_str = kyiv_time.strftime("%Y-%m-%d %H:%M:%S")
+    
     user_name = user.username or user.first_name or "Unknown"
 
     values = [[date_str, category, amount, user_name, comment]]
@@ -1212,7 +1216,8 @@ async def process_and_save(text, user, update, context):
         
         logger.info(f"Запис успішний: {result}")
         
-        # Зберігаємо інформацію про останню дію користувача
+        # Зберігаємо інформацію про останню дію користувача (також з київським часом)
+        kyiv_timestamp = utc_now + timedelta(hours=3)
         user_last_actions[user.id] = {
             'action': 'add',
             'date': date_str,
@@ -1220,14 +1225,15 @@ async def process_and_save(text, user, update, context):
             'amount': amount,
             'comment': comment,
             'row_range': result.get('updates', {}).get('updatedRange', ''),
-            'timestamp': datetime.datetime.now()
+            'timestamp': kyiv_timestamp  # Київський час для timestamp теж
         }
         
         success_message = (
             f"✅ Запис додано:\n"
             f"📂 Категорія: {category}\n"
             f"💰 Сума: {amount:.2f} грн\n"
-            f"👤 Користувач: {user_name}"
+            f"👤 Користувач: {user_name}\n"
+            f"🕒 Час: {kyiv_time.strftime('%H:%M:%S')}"  # Показуємо час користувачу
         )
         if comment:
             success_message += f"\n💬 Коментар: {comment}"
@@ -1240,7 +1246,6 @@ async def process_and_save(text, user, update, context):
         logger.error(f"Детальна помилка при записі до Google Sheets: {e}")
         logger.error(f"Тип помилки: {type(e).__name__}")
         await safe_send_message(update, context, "❌ Виникла помилка при записі даних. Перевірте доступ до таблиці.")
-
         # === ОРИГІНАЛЬНІ КОМАНДИ БОТА (НЕЗМІНЕНІ) ===
 
 async def stats_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
