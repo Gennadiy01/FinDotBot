@@ -1128,6 +1128,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ФУНКЦІЇ ОБРОБКИ ТЕКСТІВ ТА ЗБЕРЕЖЕННЯ ===
 
+
+def normalize_category(category):
+    """Нормалізує категорію до стандартного формату"""
+    if not category:
+        return category
+    
+    # Очищуємо зайві пробіли
+    category = category.strip()
+    
+    # Конвертуємо до Title Case (Перша Літера Кожного Слова Велика)
+    # Це зробить: "продукти" → "Продукти", "ПРОДУКТИ" → "Продукти"
+    normalized = category.title()
+    
+    # Виправляємо деякі особливості української мови
+    # Замінюємо типові помилки Title Case для українських слів
+    corrections = {
+        "На": "на",      # "Обіди На Роботі" → "Обіди на Роботі"
+        "До": "до",      # "Дорога До Дому" → "Дорога до Дому"  
+        "В": "в",        # "Їжа В Кафе" → "Їжа в Кафе"
+        "З": "з",        # "Подарунки З Магазину" → "Подарунки з Магазину"
+        "І": "і",        # "Хліб І Молоко" → "Хліб і Молоко"
+        "Та": "та",      # "Фрукти Та Овочі" → "Фрукти та Овочі"
+        "Для": "для",    # "Подарунки Для Дітей" → "Подарунки для Дітей"
+        "По": "по",      # "Витрати По Дому" → "Витрати по Дому"
+    }
+    
+    # Застосовуємо виправлення
+    for wrong, correct in corrections.items():
+        normalized = normalized.replace(f" {wrong} ", f" {correct} ")
+    
+    return normalized
+
 def parse_expense_text(text):
     """Розбирає текст витрати з підтримкою багатослівних категорій (до 3 слів)"""
     text = text.strip()
@@ -1172,6 +1204,9 @@ def parse_expense_text(text):
             comment = remaining_words
     else:
         category = category_text
+    
+    # НОРМАЛІЗУЄМО КАТЕГОРІЮ
+    category = normalize_category(category)
     
     # Валідація суми
     if amount <= 0:
