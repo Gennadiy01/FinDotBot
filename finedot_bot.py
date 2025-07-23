@@ -30,7 +30,9 @@ from config import (
     SERVICE_ACCOUNT_FILE,
     SPEECH_LANGUAGE,
     LOG_LEVEL,
-    MAX_VOICE_DURATION
+    MAX_VOICE_DURATION,
+    FFMPEG_TIMEOUT,
+    GOOGLE_API_TIMEOUT
 )
 
 # Налаштування логування
@@ -40,8 +42,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Глобальний словник для зберігання останніх дій користувачів
-user_last_actions = {}
+# Глобальний словник для зберігання останніх дій користувачів (з обмеженням для запобігання memory leak)
+from collections import OrderedDict
+user_last_actions = OrderedDict()
+MAX_USER_ACTIONS = 50  # Максимум 50 записів користувачів
+
+def add_user_action(user_id, action):
+    """Додає дію користувача з автоматичним очищенням старих записів"""
+    if len(user_last_actions) >= MAX_USER_ACTIONS:
+        # Видаляємо найстарший запис
+        user_last_actions.popitem(last=False)
+        logger.debug(f"Очищено старі записи user_last_actions, залишилось: {len(user_last_actions)}")
+    
+    user_last_actions[user_id] = action
+
+def cleanup_old_actions():
+    """Примусове очищення старих дій"""
+    while len(user_last_actions) > MAX_USER_ACTIONS // 2:  # Залишаємо тільки половину
+        user_last_actions.popitem(last=False)
+    logger.info(f"Виконано cleanup user_last_actions, залишилось: {len(user_last_actions)}")
 
 # Глобальна змінна для сімейного бюджету
 family_budget_amount = 0
@@ -259,11 +278,11 @@ def get_ffmpeg_path():
     
     # Спробуємо системний FFmpeg
     try:
-        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True, text=True)
+        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True, text=True, timeout=10)
         logger.info("Використовую системний FFmpeg")
         return "ffmpeg"
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        logger.warning("FFmpeg не знайдено")
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        logger.warning("FFmpeg не знайдено або timeout")
         return None
 
 # Глобальна змінна для шляху FFmpeg
@@ -1253,7 +1272,7 @@ async def process_and_save(text, user, update, context):
         
         # Зберігаємо інформацію про останню дію користувача (також з київським часом)
         kyiv_timestamp = utc_now + timedelta(hours=3)
-        user_last_actions[user.id] = {
+        add_user_action(user.id, {
             'action': 'add',
             'date': date_str,
             'category': category,
@@ -1261,7 +1280,7 @@ async def process_and_save(text, user, update, context):
             'comment': comment,
             'row_range': result.get('updates', {}).get('updatedRange', ''),
             'timestamp': kyiv_timestamp  # Київський час для timestamp теж
-        }
+        })
         
         success_message = (
             f"✅ Запис додано:\n"
@@ -1770,6 +1789,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     processing_message = await safe_bot_operation(send_processing_message)
     
+    ogg_path = None
+    wav_path = None
+    
     try:
         file = await context.bot.get_file(voice.file_id)
         
@@ -1780,22 +1802,26 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         wav_path = ogg_path.replace(".ogg", ".wav")
         
         try:
-            subprocess.run([
+            # Додаємо timeout для FFmpeg
+            result = subprocess.run([
                 FFMPEG_PATH, "-i", ogg_path, "-ar", "16000", "-ac", "1", wav_path, "-y"
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, 
+               timeout=FFMPEG_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            async def edit_message():
+                return await processing_message.edit_text("❌ Перевищено час обробки аудіо.")
+            await safe_bot_operation(edit_message)
+            logger.error("FFmpeg timeout")
+            return
         except subprocess.CalledProcessError as e:
             async def edit_message():
                 return await processing_message.edit_text("❌ Помилка конвертації аудіо.")
             await safe_bot_operation(edit_message)
             logger.error(f"ffmpeg error: {e}")
-            os.unlink(ogg_path)
             return
-        
-        os.unlink(ogg_path)
 
         with open(wav_path, "rb") as audio_file:
             content = audio_file.read()
-        os.unlink(wav_path)
 
         audio = speech.RecognitionAudio(content=content)
         config = speech.RecognitionConfig(
@@ -1832,6 +1858,15 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async def edit_message():
             return await processing_message.edit_text("❌ Помилка при розпізнаванні голосу. Спробуйте пізніше.")
         await safe_bot_operation(edit_message)
+    finally:
+        # Гарантоване видалення тимчасових файлів
+        for path in [ogg_path, wav_path]:
+            if path and os.path.exists(path):
+                try:
+                    os.unlink(path)
+                    logger.debug(f"Видалено тимчасовий файл: {path}")
+                except Exception as e:
+                    logger.warning(f"Не вдалося видалити файл {path}: {e}")
 
 # === ДОПОМІЖНІ ФУНКЦІЇ ===
 
@@ -1977,9 +2012,15 @@ async def main():
         asyncio.create_task(cleanup_and_exit())
     
     async def cleanup_and_exit():
-        if 'app' in locals():
-            await graceful_shutdown(app)
-        sys.exit(0)
+        try:
+            if 'app' in locals():
+                await graceful_shutdown(app)
+        except Exception as e:
+            logger.error(f"Помилка cleanup: {e}")
+        finally:
+            # Замість sys.exit(0) використовуємо loop.stop()
+            loop = asyncio.get_event_loop()
+            loop.stop()
     
     signal.signal(signal.SIGTERM, signal_handler_improved)
     signal.signal(signal.SIGINT, signal_handler_improved)
