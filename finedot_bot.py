@@ -311,24 +311,12 @@ except Exception as e:
 
 def create_application():
     """Створює Application з покращеними налаштуваннями"""
-    # Отримуємо налаштування з змінних середовища або використовуємо значення за замовчуванням
-    pool_size = int(os.getenv('TELEGRAM_POOL_SIZE', 8))
-    pool_timeout = int(os.getenv('TELEGRAM_TIMEOUT', 20))
-    read_timeout = int(os.getenv('TELEGRAM_READ_TIMEOUT', 30))
+    from config import TELEGRAM_POOL_SIZE, TELEGRAM_TIMEOUT, TELEGRAM_READ_TIMEOUT
     
-    # Налаштування HTTP запитів
-    request = HTTPXRequest(
-        pool_timeout=pool_timeout,        # Збільшуємо timeout пулу до 20 сек
-        connection_pool_size=pool_size,   # Збільшуємо розмір пулу з'єднань
-        read_timeout=read_timeout,        # Timeout для читання відповідей
-        write_timeout=30,                 # Timeout для відправки запитів
-        connect_timeout=10                # Timeout для підключення
-    )
+    # Створення Application без кастомного HTTPXRequest (щоб уникнути проблем з ініціалізацією)
+    application = Application.builder().token(TOKEN).build()
     
-    # Створення Application з кастомними налаштуваннями
-    application = Application.builder().token(TOKEN).request(request).build()
-    
-    logger.info(f"Application створено з pool_size={pool_size}, pool_timeout={pool_timeout}")
+    logger.info(f"Application створено з стандартними налаштуваннями")
     return application
 
 def signal_handler(signum, frame):
