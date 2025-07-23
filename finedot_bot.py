@@ -493,6 +493,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         elif data == "menu_my_stats":
             keyboard = [
                 [InlineKeyboardButton("📊 Моя статистика за місяць", callback_data="cmd_mystats")],
+                [InlineKeyboardButton("📅 Моя статистика за попередній місяць", callback_data="cmd_mystats_prev")],
                 [InlineKeyboardButton("📝 Мої останні записи", callback_data="cmd_recent")],
                 [InlineKeyboardButton("← Назад", callback_data="main_menu")],
                 [InlineKeyboardButton("✖️ Закрити", callback_data="close_menu")]
@@ -507,8 +508,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         elif data == "menu_family_stats":
             keyboard = [
                 [InlineKeyboardButton("💼 Сімейний бюджет", callback_data="cmd_family")],
+                [InlineKeyboardButton("📅 Сімейний бюджет за попередній місяць", callback_data="cmd_family_prev")],
                 [InlineKeyboardButton("👫 Порівняння витрат", callback_data="cmd_compare")],
+                [InlineKeyboardButton("👫 Порівняння за попередній місяць", callback_data="cmd_compare_prev")],
                 [InlineKeyboardButton("🏆 Хто більше витратив", callback_data="cmd_whospent")],
+                [InlineKeyboardButton("🏆 Хто більше витратив за попередній місяць", callback_data="cmd_whospent_prev")],
                 [InlineKeyboardButton("← Назад", callback_data="main_menu")],
                 [InlineKeyboardButton("✖️ Закрити", callback_data="close_menu")]
             ]
@@ -596,14 +600,22 @@ async def execute_command_from_callback(query, command, context):
     """Виконує команду з callback кнопки"""
     if command == "mystats":
         await my_stats_callback(query, context)
+    elif command == "mystats_prev":
+        await my_stats_prev_month_callback(query, context)
     elif command == "recent":
         await show_recent_expenses_callback(query, context)
     elif command == "family":
         await family_budget_callback(query, context)
+    elif command == "family_prev":
+        await family_budget_prev_month_callback(query, context)
     elif command == "compare":
         await compare_users_callback(query, context)
+    elif command == "compare_prev":
+        await compare_users_prev_month_callback(query, context)
     elif command == "whospent":
         await who_spent_more_callback(query, context)
+    elif command == "whospent_prev":
+        await who_spent_more_prev_month_callback(query, context)
     elif command == "today":
         await stats_today_callback(query, context)
     elif command == "week":
@@ -631,6 +643,22 @@ async def my_stats_callback(query, context):
     expenses = get_all_expenses()
     filtered_expenses = filter_expenses_by_period(expenses, "month", user_name)
     message = generate_stats_message(filtered_expenses, "поточний місяць", user_name)
+    
+    keyboard = [
+        [InlineKeyboardButton("← Назад", callback_data="menu_my_stats")],
+        [InlineKeyboardButton("✖️ Закрити", callback_data="close_menu")]
+    ]
+    back_button = InlineKeyboardMarkup(keyboard)
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
+async def my_stats_prev_month_callback(query, context):
+    """Особиста статистика за попередній місяць через callback"""
+    user = query.from_user
+    user_name = user.username or user.first_name or "Unknown"
+    
+    expenses = get_all_expenses()
+    filtered_expenses = filter_expenses_by_period(expenses, "prev_month", user_name)
+    message = generate_stats_message(filtered_expenses, "попередній місяць", user_name)
     
     keyboard = [
         [InlineKeyboardButton("← Назад", callback_data="menu_my_stats")],
@@ -747,6 +775,49 @@ async def family_budget_callback(query, context):
     ])
     await safe_send_callback_message(query, message, reply_markup=back_button)
 
+async def family_budget_prev_month_callback(query, context):
+    """Сімейний бюджет за попередній місяць через callback"""
+    expenses = get_all_expenses()
+    
+    prev_month_expenses = filter_expenses_by_period(expenses, "prev_month")
+    prev_month_total = sum(exp['amount'] for exp in prev_month_expenses)
+    
+    if not prev_month_expenses:
+        message = "Немає витрат за попередній місяць."
+    else:
+        users_prev_month = {}
+        for exp in prev_month_expenses:
+            user = exp['user']
+            users_prev_month[user] = users_prev_month.get(user, 0) + exp['amount']
+        
+        categories_prev_month = {}
+        for exp in prev_month_expenses:
+            category = exp['category']
+            categories_prev_month[category] = categories_prev_month.get(category, 0) + exp['amount']
+        
+        message = f"💼 Сімейний бюджет за попередній місяць:\n\n"
+        message += f"💰 Загальна сума: {prev_month_total:.2f} грн\n"
+        message += f"📝 Кількість записів: {len(prev_month_expenses)}\n\n"
+        
+        # По користувачах
+        message += "👥 По користувачах:\n"
+        for user, amount in sorted(users_prev_month.items(), key=lambda x: x[1], reverse=True):
+            percentage = (amount / prev_month_total) * 100
+            message += f"• {user}: {amount:.2f} грн ({percentage:.1f}%)\n"
+        
+        # Топ категорії
+        message += "\n🏆 Топ категорії:\n"
+        top_categories = sorted(categories_prev_month.items(), key=lambda x: x[1], reverse=True)[:5]
+        for category, amount in top_categories:
+            percentage = (amount / prev_month_total) * 100
+            message += f"• {category}: {amount:.2f} грн ({percentage:.1f}%)\n"
+    
+    back_button = InlineKeyboardMarkup([
+        [InlineKeyboardButton("← Назад", callback_data="menu_family_stats")],
+        [InlineKeyboardButton("✖️ Закрити", callback_data="close_menu")]
+    ])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
 async def compare_users_callback(query, context):
     """Порівняння користувачів через callback"""
     expenses = get_all_expenses()
@@ -797,6 +868,46 @@ async def compare_users_callback(query, context):
     ])
     await safe_send_callback_message(query, message, reply_markup=back_button)
 
+async def compare_users_prev_month_callback(query, context):
+    """Порівняння користувачів за попередній місяць через callback"""
+    expenses = get_all_expenses()
+    filtered_expenses = filter_expenses_by_period(expenses, "prev_month")
+    
+    if not filtered_expenses:
+        message = "Немає витрат за попередній місяць для порівняння."
+    else:
+        users = {}
+        for exp in filtered_expenses:
+            user = exp['user']
+            users[user] = users.get(user, 0) + exp['amount']
+        
+        total = sum(users.values())
+        
+        message = "👫 Порівняння витрат за попередній місяць:\n\n"
+        
+        for user, amount in sorted(users.items(), key=lambda x: x[1], reverse=True):
+            percentage = (amount / total) * 100
+            message += f"👤 {user}:\n"
+            message += f"   💰 Сума: {amount:.2f} грн ({percentage:.1f}%)\n"
+            
+            # Детальна статистика по кожному користувачу
+            user_expenses = [exp for exp in filtered_expenses if exp['user'] == user]
+            user_categories = {}
+            for exp in user_expenses:
+                category = exp['category']
+                user_categories[category] = user_categories.get(category, 0) + exp['amount']
+            
+            top_categories = sorted(user_categories.items(), key=lambda x: x[1], reverse=True)[:3]
+            message += "   🏆 Топ категорії: "
+            message += ", ".join([f"{cat} ({amt:.0f}₴)" for cat, amt in top_categories])
+            message += "\n\n"
+    
+    back_button = InlineKeyboardMarkup([
+        [InlineKeyboardButton("← Назад", callback_data="menu_family_stats")],
+        [InlineKeyboardButton("✖️ Закрити", callback_data="close_menu")]
+    ])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
     # === РЕШТА CALLBACK ФУНКЦІЙ ===
 
 async def who_spent_more_callback(query, context):
@@ -831,6 +942,46 @@ async def who_spent_more_callback(query, context):
                 
                 if difference > 0:
                     message += f"\n💡 {sorted_users[0][0]} витратив більше на {difference:.2f} грн"
+    
+    back_button = InlineKeyboardMarkup([
+        [InlineKeyboardButton("← Назад", callback_data="menu_family_stats")],
+        [InlineKeyboardButton("✖️ Закрити", callback_data="close_menu")]
+    ])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
+async def who_spent_more_prev_month_callback(query, context):
+    """Хто більше витратив за попередній місяць через callback"""
+    expenses = get_all_expenses()
+    filtered_expenses = filter_expenses_by_period(expenses, "prev_month")
+    
+    if not filtered_expenses:
+        message = "Немає витрат за попередній місяць для рейтингу."
+    else:
+        users = {}
+        for exp in filtered_expenses:
+            user = exp['user']
+            users[user] = users.get(user, 0) + exp['amount']
+        
+        total = sum(users.values())
+        
+        message = "🏆 Рейтинг витрат за попередній місяць:\n\n"
+        
+        for position, (user, amount) in enumerate(sorted(users.items(), key=lambda x: x[1], reverse=True), 1):
+            percentage = (amount / total) * 100
+            
+            if position == 1:
+                emoji = "🥇"
+            elif position == 2:
+                emoji = "🥈"
+            elif position == 3:
+                emoji = "🥉"
+            else:
+                emoji = f"{position}."
+                
+            message += f"{emoji} {user}: {amount:.2f} грн ({percentage:.1f}%)\n"
+        
+        message += f"\n💰 Загальна сума: {total:.2f} грн"
+        message += f"\n📝 Всього записів: {len(filtered_expenses)}"
     
     back_button = InlineKeyboardMarkup([
         [InlineKeyboardButton("← Назад", callback_data="menu_family_stats")],
