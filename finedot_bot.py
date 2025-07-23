@@ -380,12 +380,24 @@ def filter_expenses_by_period(expenses, period_type, user_filter=None, include_i
         start_date = (now - timedelta(days=days_since_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
     elif period_type == "month":
         start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    elif period_type == "prev_month":
+        # Попередній місяць
+        if now.month == 1:
+            start_date = now.replace(year=now.year - 1, month=12, day=1, hour=0, minute=0, second=0, microsecond=0)
+            end_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        else:
+            start_date = now.replace(month=now.month - 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            end_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     elif period_type == "year":
         start_date = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
     else:
         return expenses
     
-    filtered = [exp for exp in expenses if exp['date'] >= start_date]
+    # Фільтруємо по періоду
+    if period_type == "prev_month":
+        filtered = [exp for exp in expenses if start_date <= exp['date'] < end_date]
+    else:
+        filtered = [exp for exp in expenses if exp['date'] >= start_date]
     
     # Фільтр по користувачу
     if user_filter:
@@ -512,6 +524,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 [InlineKeyboardButton("📅 Сьогодні", callback_data="cmd_today")],
                 [InlineKeyboardButton("📅 Тиждень", callback_data="cmd_week")],
                 [InlineKeyboardButton("📅 Місяць", callback_data="cmd_month")],
+                [InlineKeyboardButton("📅 Попередній місяць", callback_data="cmd_prev_month")],
                 [InlineKeyboardButton("🏆 Топ категорій", callback_data="cmd_top")],
                 [InlineKeyboardButton("← Назад", callback_data="main_menu")],
                 [InlineKeyboardButton("✖️ Закрити", callback_data="close_menu")]
@@ -597,6 +610,8 @@ async def execute_command_from_callback(query, command, context):
         await stats_week_callback(query, context)
     elif command == "month":
         await stats_month_callback(query, context)
+    elif command == "prev_month":
+        await stats_prev_month_callback(query, context)
     elif command == "top":
         await top_categories_callback(query, context)
     elif command == "budget_status":
@@ -859,6 +874,18 @@ async def stats_month_callback(query, context):
     ])
     await safe_send_callback_message(query, message, reply_markup=back_button)
 
+async def stats_prev_month_callback(query, context):
+    """Статистика за попередній місяць через callback"""
+    expenses = get_all_expenses()
+    filtered_expenses = filter_expenses_by_period(expenses, "prev_month")
+    message = generate_stats_message(filtered_expenses, "попередній місяць")
+    
+    back_button = InlineKeyboardMarkup([
+        [InlineKeyboardButton("← Назад", callback_data="menu_periods")],
+        [InlineKeyboardButton("✖️ Закрити", callback_data="close_menu")]
+    ])
+    await safe_send_callback_message(query, message, reply_markup=back_button)
+
 async def top_categories_callback(query, context):
     """Топ категорій через callback"""
     expenses = get_all_expenses()
@@ -1086,6 +1113,7 @@ async def show_help(query):
         "/today - витрати за сьогодні\n"
         "/week - витрати за тиждень\n"
         "/month - витрати за місяць\n"
+        "/prevmonth - витрати за попередній місяць\n"
         "/top - топ категорій\n\n"
         "💰 Планування бюджету:\n"
         "/budget 15000 - встановити бюджет\n"
@@ -1309,6 +1337,13 @@ async def stats_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     expenses = get_all_expenses()
     filtered_expenses = filter_expenses_by_period(expenses, "month")
     message = generate_stats_message(filtered_expenses, "поточний місяць")
+    await safe_send_message(update, context, message)
+
+async def stats_prev_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Статистика за попередній місяць"""
+    expenses = get_all_expenses()
+    filtered_expenses = filter_expenses_by_period(expenses, "prev_month")
+    message = generate_stats_message(filtered_expenses, "попередній місяць")
     await safe_send_message(update, context, message)
 
 async def stats_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1890,6 +1925,7 @@ def add_handlers(app):
     app.add_handler(CommandHandler("today", stats_today))
     app.add_handler(CommandHandler("week", stats_week))
     app.add_handler(CommandHandler("month", stats_month))
+    app.add_handler(CommandHandler("prevmonth", stats_prev_month))
     app.add_handler(CommandHandler("year", stats_year))
     app.add_handler(CommandHandler("mystats", my_stats))
     app.add_handler(CommandHandler("top", top_categories))
