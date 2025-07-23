@@ -1956,7 +1956,7 @@ def add_handlers(app):
 
 # === ДОДАЙТЕ ЦІ ФУНКЦІЇ ПЕРЕД async def main(): ===
 
-async def safe_start_polling(app, max_retries=5):
+async def safe_start_polling(app, max_retries=8):
     """Безпечний запуск polling з автоматичним відновленням після конфліктів"""
     retry_count = 0
     
@@ -1966,12 +1966,13 @@ async def safe_start_polling(app, max_retries=5):
             
             await app.updater.start_polling(
                 drop_pending_updates=True,
-                bootstrap_retries=3,
-                timeout=20,
-                read_timeout=25,
-                write_timeout=25,
-                connect_timeout=15,
-                allowed_updates=["message", "callback_query"]
+                bootstrap_retries=5,
+                timeout=30,
+                read_timeout=35,
+                write_timeout=35,
+                connect_timeout=20,
+                allowed_updates=["message", "callback_query"],
+                poll_interval=1.0
             )
             
             logger.info("✅ Polling запущено успішно")
@@ -1982,12 +1983,20 @@ async def safe_start_polling(app, max_retries=5):
             error_msg = str(e).lower()
             if "conflict" in error_msg or "terminated by other getupdates" in error_msg:
                 retry_count += 1
-                wait_time = min(30 * retry_count, 120)  # Exponential backoff: 30, 60, 90, 120 сек
+                wait_time = min(30 * retry_count, 180)  # Exponential backoff: 30, 60, 90, 120, 150, 180 сек
                 
                 logger.warning(f"⚠️ Конфлікт з Telegram API (спроба {retry_count}/{max_retries})")
                 logger.warning(f"🕐 Чекаємо {wait_time} секунд перед наступною спробою...")
                 
                 if retry_count < max_retries:
+                    # Додаткове очищення перед повторною спробою
+                    try:
+                        await app.bot.delete_webhook(drop_pending_updates=True)
+                        logger.info("🧹 Додаткове очищення webhook перед повторною спробою")
+                        await asyncio.sleep(5)  # Коротка пауза після очищення
+                    except Exception as cleanup_error:
+                        logger.warning(f"⚠️ Не вдалося виконати додаткове очищення: {cleanup_error}")
+                    
                     await asyncio.sleep(wait_time)
                 else:
                     logger.error("❌ Всі спроби вичерпано, не вдалося запустити polling")
@@ -2024,6 +2033,21 @@ async def graceful_shutdown(app):
         logger.error(f"❌ Помилка при graceful shutdown: {e}")
     
     logger.info("✅ Graceful shutdown завершено")
+
+async def clear_webhook_and_pending_updates(bot):
+    """Очищає webhook та pending updates для уникнення конфліктів"""
+    try:
+        logger.info("🧹 Очищення webhook та pending updates...")
+        
+        # Видаляємо webhook якщо він встановлений
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Webhook очищено")
+        
+        # Додаткова пауза для стабільності
+        await asyncio.sleep(3)
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Не вдалося очистити webhook: {e}")
 
 async def main():
     """Основна функція запуску бота з покращеною обробкою конфліктів"""
@@ -2076,6 +2100,9 @@ async def main():
             logger.info("🎤 Голосові повідомлення увімкнені")
         else:
             logger.warning("⚠️ Голосові повідомлення вимкнені (FFmpeg не знайдено)")
+        
+        # ОЧИЩЕННЯ ПЕРЕД ЗАПУСКОМ
+        await clear_webhook_and_pending_updates(app.bot)
         
         # БЕЗПЕЧНИЙ ЗАПУСК POLLING
         polling_started = await safe_start_polling(app)
