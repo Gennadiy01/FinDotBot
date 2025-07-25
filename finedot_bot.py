@@ -2217,9 +2217,8 @@ async def main():
         except Exception as e:
             logger.error(f"Помилка cleanup: {e}")
         finally:
-            # Замість sys.exit(0) використовуємо loop.stop()
-            loop = asyncio.get_event_loop()
-            loop.stop()
+            # Використовуємо KeyboardInterrupt для graceful shutdown
+            raise KeyboardInterrupt("Graceful shutdown initiated")
     
     signal.signal(signal.SIGTERM, signal_handler_improved)
     signal.signal(signal.SIGINT, signal_handler_improved)
@@ -2309,4 +2308,6 @@ async def main():
         await graceful_shutdown(app)
 
 if __name__ == '__main__':
+    # Використовуємо run.py для запуску
+    logger.warning("⚠️ Використовуйте run.py для запуску бота замість finedot_bot.py")
     asyncio.run(main())
