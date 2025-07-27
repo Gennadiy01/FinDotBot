@@ -206,12 +206,14 @@ async def safe_bot_operation(operation, max_retries=3):
                     logger.error("❌ Всі спроби вичерпано (timeout)")
                     raise
             
-            # Обробка мережевих помилок
-            elif any(keyword in error_msg for keyword in ["network", "connection", "unreachable", "failed to connect"]):
+            # Обробка мережевих помилок (включаючи httpx.ReadError)
+            elif any(keyword in error_msg for keyword in ["network", "connection", "unreachable", "failed to connect", "readerror", "readtimeout"]):
                 logger.warning(f"🌐 Мережева помилка на спробі {attempt + 1}: {e}")
                 
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
+                    wait_time = 2 ** attempt + 1  # 1, 3, 5 секунд
+                    logger.info(f"⏰ Чекаємо {wait_time} секунд перед повтором...")
+                    await asyncio.sleep(wait_time)
                 else:
                     logger.error("❌ Всі спроби вичерпано (мережа)")
                     raise
@@ -2217,8 +2219,8 @@ async def main():
         except Exception as e:
             logger.error(f"Помилка cleanup: {e}")
         finally:
-            # Використовуємо KeyboardInterrupt для graceful shutdown
-            raise KeyboardInterrupt("Graceful shutdown initiated")
+            # Встановлюємо глобальний флаг для завершення
+            logger.info("✅ Cleanup завершено, зупинка event loop")
     
     signal.signal(signal.SIGTERM, signal_handler_improved)
     signal.signal(signal.SIGINT, signal_handler_improved)
