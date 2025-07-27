@@ -9,7 +9,7 @@ SPREADSHEET_ID = os.getenv('SPREADSHEET_ID', 'ваш_google_sheets_id')
 RANGE_NAME = os.getenv('RANGE_NAME', "'Аркуш1'!A:E")
 
 # Google Service Account - може бути як файл, так і JSON рядок
-SERVICE_ACCOUNT_FILE = 'service_account.json'  # Повертаємо вашу логіку
+SERVICE_ACCOUNT_FILE = 'findot-sheets-sync-acd9b0292ce3.json'  # Використовуємо існуючий файл
 SERVICE_ACCOUNT_JSON = os.getenv('SERVICE_ACCOUNT_JSON')
 
 # Якщо є змінна середовища з JSON, створюємо файл
