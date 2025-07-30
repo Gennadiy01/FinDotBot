@@ -2117,6 +2117,11 @@ async def safe_start_polling(app, max_retries=8):
         try:
             logger.info(f"🔄 Спроба запуску polling #{retry_count + 1}")
             
+            # КРИТИЧНО ВАЖЛИВО: перевіряємо чи application.initialize() вже викликано
+            if not app.running:
+                logger.error("❌ Application не ініціалізовано! Викличте app.initialize() спочатку")
+                raise RuntimeError("Application was not initialized via 'app.initialize()'!")
+            
             await app.updater.start_polling(
                 drop_pending_updates=True,
                 bootstrap_retries=5,
@@ -2239,13 +2244,14 @@ async def main():
     app = create_application()
     
     try:
-        # Ініціалізація
+        # ПРАВИЛЬНА ПОСЛІДОВНІСТЬ ІНІЦІАЛІЗАЦІЇ для python-telegram-bot 20.x
         logger.info("🔄 Ініціалізація application...")
         await app.initialize()
-        await app.start()
         
-        # Додавання обробників команд
+        # Додавання обробників команд ПІСЛЯ ініціалізації
         add_handlers(app)
+        
+        await app.start()
         
         logger.info("✅ FinDotBot ініціалізовано та готовий до роботи...")
         if FFMPEG_PATH:
