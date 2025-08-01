@@ -70,15 +70,21 @@ async def stop_health_server():
         logger.error(f"Помилка зупинки health check сервера: {e}")
 
 async def run_bot():
-    """Основна функція запуску"""
+    """Основна функція запуску з послідовним стартом"""
     try:
-        # Запускаємо health check сервер
+        # Спочатку запускаємо бота
+        logger.info("Запуск FinDotBot...")
+        bot_task = asyncio.create_task(main())
+        
+        # Даємо боту час на ініціалізацію
+        await asyncio.sleep(2)
+        
+        # Потім запускаємо health check сервер
         logger.info(f"Запуск health check сервера на порту {HEALTH_CHECK_PORT}")
         await start_health_server()
         
-        # Запускаємо основного бота
-        logger.info("Запуск FinDotBot...")
-        await main()
+        # Чекаємо завершення бота
+        await bot_task
         
     except KeyboardInterrupt:
         logger.info("Отримано сигнал переривання, зупинка бота...")

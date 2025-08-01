@@ -315,10 +315,22 @@ def create_application():
     """Створює Application з покращеними налаштуваннями"""
     from config import TELEGRAM_POOL_SIZE, TELEGRAM_TIMEOUT, TELEGRAM_READ_TIMEOUT
     
-    # Створення Application без кастомного HTTPXRequest (щоб уникнути проблем з ініціалізацією)
-    application = Application.builder().token(TOKEN).build()
+    # Створення HTTPXRequest з правильними налаштуваннями
+    request = HTTPXRequest(
+        connection_pool_size=TELEGRAM_POOL_SIZE,
+        read_timeout=TELEGRAM_READ_TIMEOUT,
+        write_timeout=TELEGRAM_TIMEOUT,
+        connect_timeout=TELEGRAM_TIMEOUT
+    )
     
-    logger.info(f"Application створено з стандартними налаштуваннями")
+    application = (
+        Application.builder()
+        .token(TOKEN)
+        .request(request)
+        .build()
+    )
+    
+    logger.info(f"Application створено з HTTPXRequest налаштуваннями (pool_size={TELEGRAM_POOL_SIZE}, timeout={TELEGRAM_TIMEOUT})")
     return application
 
 def signal_handler(signum, frame):
@@ -2247,6 +2259,17 @@ async def main():
         # ПРАВИЛЬНА ПОСЛІДОВНІСТЬ ІНІЦІАЛІЗАЦІЇ для python-telegram-bot 20.x
         logger.info("🔄 Ініціалізація application...")
         await app.initialize()
+        
+        # Перевірка ініціалізації
+        if not app.updater:
+            logger.error("❌ Updater не створено!")
+            return
+            
+        if not hasattr(app.bot, '_request') or not app.bot._request:
+            logger.error("❌ HTTP request не ініціалізовано!")
+            return
+            
+        logger.info("✅ Перевірка ініціалізації пройшла успішно")
         
         # Додавання обробників команд ПІСЛЯ ініціалізації
         add_handlers(app)
