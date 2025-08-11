@@ -2129,9 +2129,16 @@ async def safe_start_polling(app, max_retries=8):
         try:
             logger.info(f"🔄 Спроба запуску polling #{retry_count + 1}")
             
-            # КРИТИЧНО ВАЖЛИВО: перевіряємо чи application.initialize() вже викликано
+            # КРИТИЧНО ВАЖЛИВО: чекаємо поки application.initialize() повністю завершиться
+            wait_count = 0
+            max_wait = 30  # максимум 15 секунд очікування
+            while not app.running and wait_count < max_wait:
+                logger.info(f"⏳ Очікуємо завершення ініціалізації... ({wait_count + 1}/{max_wait})")
+                await asyncio.sleep(0.5)
+                wait_count += 1
+            
             if not app.running:
-                logger.error("❌ Application не ініціалізовано! Викличте app.initialize() спочатку")
+                logger.error("❌ Application не ініціалізовано навіть після очікування! Викличте app.initialize() спочатку")
                 raise RuntimeError("Application was not initialized via 'app.initialize()'!")
             
             await app.updater.start_polling(
@@ -2256,9 +2263,27 @@ async def main():
     app = create_application()
     
     try:
-        # ПРАВИЛЬНА ПОСЛІДОВНІСТЬ ІНІЦІАЛІЗАЦІЇ для python-telegram-bot 20.x
+        # ПРАВИЛЬНА ПОСЛІДОВНІСТЬ ІНІЦІАЛІЗАЦІЇ для python-telegram-bot 20.x з retry логікою
         logger.info("🔄 Ініціалізація application...")
-        await app.initialize()
+        
+        # Retry логіка для ініціалізації
+        init_retry_count = 0
+        max_init_retries = 3
+        
+        while init_retry_count < max_init_retries:
+            try:
+                await app.initialize()
+                logger.info(f"✅ Application ініціалізовано успішно (спроба {init_retry_count + 1})")
+                break
+            except Exception as init_error:
+                init_retry_count += 1
+                logger.warning(f"⚠️ Помилка ініціалізації (спроба {init_retry_count}/{max_init_retries}): {init_error}")
+                
+                if init_retry_count >= max_init_retries:
+                    logger.error("❌ Не вдалося ініціалізувати application після всіх спроб")
+                    raise
+                    
+                await asyncio.sleep(2)  # Пауза перед наступною спробою
         
         # Перевірка ініціалізації
         if not app.updater:

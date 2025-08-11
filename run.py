@@ -76,8 +76,8 @@ async def run_bot():
         logger.info("Запуск FinDotBot...")
         bot_task = asyncio.create_task(main())
         
-        # Даємо боту час на ініціалізацію
-        await asyncio.sleep(2)
+        # Даємо боту час на ініціалізацію (збільшено з 2 до 5 секунд для стабільності Render)
+        await asyncio.sleep(5)
         
         # Потім запускаємо health check сервер
         logger.info(f"Запуск health check сервера на порту {HEALTH_CHECK_PORT}")
