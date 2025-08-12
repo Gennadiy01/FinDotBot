@@ -2129,17 +2129,16 @@ async def safe_start_polling(app, max_retries=8):
         try:
             logger.info(f"🔄 Спроба запуску polling #{retry_count + 1}")
             
-            # КРИТИЧНО ВАЖЛИВО: чекаємо поки application.initialize() повністю завершиться
-            wait_count = 0
-            max_wait = 30  # максимум 15 секунд очікування
-            while not app.running and wait_count < max_wait:
-                logger.info(f"⏳ Очікуємо завершення ініціалізації... ({wait_count + 1}/{max_wait})")
-                await asyncio.sleep(0.5)
-                wait_count += 1
-            
-            if not app.running:
-                logger.error("❌ Application не ініціалізовано навіть після очікування! Викличте app.initialize() спочатку")
+            # КРИТИЧНО ВАЖЛИВО: перевіряємо що application та updater готові
+            if not hasattr(app, 'updater') or not app.updater:
+                logger.error("❌ Updater не створено! Викличте app.initialize() спочатку")
                 raise RuntimeError("Application was not initialized via 'app.initialize()'!")
+                
+            if not hasattr(app.bot, '_request') or not app.bot._request:
+                logger.error("❌ HTTP request не ініціалізовано! Викличте app.initialize() спочатку")
+                raise RuntimeError("Application was not initialized via 'app.initialize()'!")
+                
+            logger.info("✅ Application готовий для запуску polling")
             
             await app.updater.start_polling(
                 drop_pending_updates=True,
@@ -2300,6 +2299,10 @@ async def main():
         add_handlers(app)
         
         await app.start()
+        
+        # Додаткова пауза для повної ініціалізації Application після start()
+        logger.info("⏳ Очікуємо повної ініціалізації Application...")
+        await asyncio.sleep(2)
         
         logger.info("✅ FinDotBot ініціалізовано та готовий до роботи...")
         if FFMPEG_PATH:
