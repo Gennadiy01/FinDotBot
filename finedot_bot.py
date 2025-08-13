@@ -311,7 +311,7 @@ except Exception as e:
     logger.error(f"Помилка підключення до Google Speech-to-Text API: {e}")
     raise
 
-def create_application():
+async def create_application():
     """Створює Application з покращеними налаштуваннями"""
     from config import TELEGRAM_POOL_SIZE, TELEGRAM_TIMEOUT, TELEGRAM_READ_TIMEOUT
     
@@ -322,6 +322,10 @@ def create_application():
         write_timeout=TELEGRAM_TIMEOUT,
         connect_timeout=TELEGRAM_TIMEOUT
     )
+    
+    # КРИТИЧНО ВАЖЛИВО: ініціалізуємо HTTPXRequest перед використанням
+    await request.initialize()
+    logger.info("✅ HTTPXRequest ініціалізовано")
     
     application = (
         Application.builder()
@@ -2205,6 +2209,12 @@ async def graceful_shutdown(app):
         await app.shutdown()
         logger.info("✅ Application завершено")
         
+        # Очищуємо HTTPXRequest
+        if hasattr(app.bot, '_request') and app.bot._request:
+            logger.info("🔄 Очищуємо HTTPXRequest...")
+            await app.bot._request.shutdown()
+            logger.info("✅ HTTPXRequest очищено")
+        
     except Exception as e:
         logger.error(f"❌ Помилка при graceful shutdown: {e}")
     
@@ -2259,7 +2269,7 @@ async def main():
         logger.error(f"❌ Не вдалося протестувати доступ до Google Sheets: {e}")
     
     # Створення Application з покращеними налаштуваннями
-    app = create_application()
+    app = await create_application()
     
     try:
         # ПРАВИЛЬНА ПОСЛІДОВНІСТЬ ІНІЦІАЛІЗАЦІЇ для python-telegram-bot 20.x з retry логікою
