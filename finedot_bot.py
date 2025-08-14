@@ -2172,17 +2172,24 @@ async def safe_start_polling(app, max_retries=8):
             error_msg = str(e).lower()
             if "conflict" in error_msg or "terminated by other getupdates" in error_msg:
                 retry_count += 1
-                wait_time = min(30 * retry_count, 180)  # Exponential backoff: 30, 60, 90, 120, 150, 180 сек
+                # Більш агресивний backoff для конфліктів
+                wait_time = min(60 * retry_count, 300)  # 60, 120, 180, 240, 300 сек
                 
-                logger.warning(f"⚠️ Конфлікт з Telegram API (спроба {retry_count}/{max_retries})")
-                logger.warning(f"🕐 Чекаємо {wait_time} секунд перед наступною спробою...")
+                logger.error(f"🚨 КОНФЛІКТ з Telegram API (спроба {retry_count}/{max_retries})")
+                logger.error(f"🚨 Можливо запущено кілька екземплярів бота або webhook активний!")
+                logger.warning(f"🕐 Очікуємо {wait_time} секунд перед наступною спробою...")
                 
                 if retry_count < max_retries:
-                    logger.info("🧹 Агресивне очищення перед повторною спробою...")
-                    # Виконуємо повне очищення webhook та pending updates
-                    await clear_webhook_and_pending_updates(app.bot)
+                    logger.info("🧹 ЕКСТРЕМАЛЬНЕ очищення перед повторною спробою...")
                     
-                    logger.info(f"⏳ Очікуємо {wait_time} секунд для стабілізації...")
+                    # Подвійне очищення з великими паузами
+                    for i in range(2):
+                        logger.info(f"🧹 Екстремальний цикл очищення #{i + 1}/2")
+                        await clear_webhook_and_pending_updates(app.bot)
+                        if i == 0:
+                            await asyncio.sleep(20)  # Пауза між циклами
+                    
+                    logger.info(f"⏳ ЕКСТРЕМАЛЬНЕ очікування {wait_time} секунд для повної стабілізації...")
                     await asyncio.sleep(wait_time)
                 else:
                     logger.error("❌ Всі спроби вичерпано, не вдалося запустити polling")
@@ -2234,56 +2241,79 @@ async def graceful_shutdown(app):
     logger.info("✅ Graceful shutdown завершено")
 
 async def clear_webhook_and_pending_updates(bot):
-    """Агресивне очищення webhook та pending updates для уникнення конфліктів"""
-    max_attempts = 3
+    """ЕКСТРЕМАЛЬНЕ очищення webhook та pending updates для уникнення конфліктів"""
+    max_attempts = 5  # Збільшено кількість спроб
     
     for attempt in range(max_attempts):
         try:
-            logger.info(f"🧹 Очищення webhook та pending updates (спроба {attempt + 1}/{max_attempts})...")
+            logger.info(f"🧹 ЕКСТРЕМАЛЬНЕ очищення webhook та pending updates (спроба {attempt + 1}/{max_attempts})...")
             
             # Спочатку перевіряємо поточний стан
             try:
                 webhook_info = await bot.get_webhook_info()
                 if webhook_info.url:
-                    logger.warning(f"⚠️ Знайдено активний webhook: {webhook_info.url}")
+                    logger.error(f"🚨 ЗНАЙДЕНО АКТИВНИЙ WEBHOOK: {webhook_info.url}")
+                    logger.error(f"🚨 Це може бути причиною конфлікту!")
                 else:
                     logger.info("✅ Webhook не встановлений")
             except Exception as info_error:
                 logger.warning(f"⚠️ Не вдалося отримати інформацію про webhook: {info_error}")
             
-            # Агресивно видаляємо webhook з pending updates
-            await bot.delete_webhook(drop_pending_updates=True)
-            logger.info("✅ Webhook видалено з drop_pending_updates=True")
+            # ПОДВІЙНЕ видалення webhook
+            for delete_attempt in range(2):
+                try:
+                    logger.info(f"🧹 Видалення webhook (цикл {delete_attempt + 1}/2)...")
+                    await bot.delete_webhook(drop_pending_updates=True)
+                    logger.info("✅ Webhook видалено з drop_pending_updates=True")
+                    await asyncio.sleep(3)
+                except Exception as delete_error:
+                    logger.warning(f"⚠️ Помилка видалення webhook (цикл {delete_attempt + 1}): {delete_error}")
             
-            # Збільшена пауза для стабільності
-            await asyncio.sleep(5)
+            # ТРИЧІ очищаємо pending updates різними способами
+            for cleanup_method in range(3):
+                try:
+                    if cleanup_method == 0:
+                        logger.info("🧹 Очищення pending updates (метод 1: offset=-1)...")
+                        await bot.get_updates(offset=-1, limit=1, timeout=1)
+                    elif cleanup_method == 1:
+                        logger.info("🧹 Очищення pending updates (метод 2: високий offset)...")
+                        await bot.get_updates(offset=999999, limit=1, timeout=1)
+                    else:
+                        logger.info("🧹 Очищення pending updates (метод 3: стандартний)...")
+                        updates = await bot.get_updates(limit=100, timeout=1)
+                        if updates:
+                            logger.info(f"🧹 Очищено {len(updates)} pending updates")
+                        
+                    logger.info(f"✅ Pending updates очищено (метод {cleanup_method + 1})")
+                    await asyncio.sleep(2)
+                except Exception as get_updates_error:
+                    logger.warning(f"⚠️ Помилка очищення pending updates (метод {cleanup_method + 1}): {get_updates_error}")
             
-            # Додатково очищаємо pending updates через getUpdates
-            try:
-                logger.info("🧹 Додаткове очищення через getUpdates...")
-                await bot.get_updates(offset=-1, limit=1, timeout=1)
-                logger.info("✅ Pending updates очищено")
-            except Exception as get_updates_error:
-                logger.warning(f"⚠️ Не вдалося очистити через getUpdates: {get_updates_error}")
+            # Збільшена пауза між спробами
+            await asyncio.sleep(8)
             
-            # Перевіряємо що webhook дійсно видалений
+            # Підтверджуємо що webhook дійсно видалений
             try:
                 webhook_info = await bot.get_webhook_info()
                 if not webhook_info.url:
-                    logger.info("✅ Підтверджено: webhook успішно видалений")
+                    logger.info("✅ ПІДТВЕРДЖЕНО: webhook успішно видалений")
+                    # Додаткова пауза після успішного очищення
+                    await asyncio.sleep(5)
                     break
                 else:
-                    logger.warning(f"⚠️ Webhook все ще активний: {webhook_info.url}")
+                    logger.error(f"🚨 WEBHOOK ВСЕ ЩЕ АКТИВНИЙ: {webhook_info.url}")
+                    if attempt == max_attempts - 1:
+                        logger.error("🚨 КРИТИЧНО: Не вдалося видалити webhook після всіх спроб!")
             except Exception as verify_error:
                 logger.warning(f"⚠️ Не вдалося перевірити стан webhook: {verify_error}")
                 break  # Припускаємо що все ОК якщо не можемо перевірити
                 
         except Exception as e:
-            logger.warning(f"⚠️ Спроба {attempt + 1} не вдалася: {e}")
+            logger.error(f"🚨 Спроба {attempt + 1} не вдалася: {e}")
             if attempt == max_attempts - 1:
-                logger.error("❌ Не вдалося очистити webhook після всіх спроб")
+                logger.error("🚨 КРИТИЧНО: Не вдалося очистити webhook після всіх спроб!")
             else:
-                await asyncio.sleep(2)  # Пауза між спробами
+                await asyncio.sleep(5)  # Збільшена пауза між спробами
 
 async def main():
     """Основна функція запуску бота з покращеною обробкою конфліктів"""
@@ -2376,13 +2406,20 @@ async def main():
         else:
             logger.warning("⚠️ Голосові повідомлення вимкнені (FFmpeg не знайдено)")
         
-        # АГРЕСИВНЕ ОЧИЩЕННЯ ПЕРЕД ЗАПУСКОМ (збільшена пауза)
-        logger.info("🧹 Критичне очищення перед запуском для усунення конфліктів...")
-        await clear_webhook_and_pending_updates(app.bot)
+        # ЕКСТРЕМАЛЬНЕ ОЧИЩЕННЯ ПЕРЕД ЗАПУСКОМ (максимальна пауза)
+        logger.info("🧹 КРИТИЧНЕ очищення для усунення всіх можливих конфліктів...")
         
-        # Додаткова пауза після очищення для стабільності
-        logger.info("⏳ Додаткова пауза після очищення для стабільності...")
-        await asyncio.sleep(10)
+        # Виконуємо очищення кілька разів з великими паузами
+        for cleanup_attempt in range(2):
+            logger.info(f"🧹 Цикл очищення #{cleanup_attempt + 1}/2")
+            await clear_webhook_and_pending_updates(app.bot)
+            if cleanup_attempt == 0:
+                logger.info("⏳ Проміжна пауза між циклами очищення...")
+                await asyncio.sleep(15)
+        
+        # МАКСИМАЛЬНА пауза для завершення всіх процесів на Render
+        logger.info("⏳ МАКСИМАЛЬНА пауза для стабілізації (30 секунд)...")
+        await asyncio.sleep(30)
         
         # БЕЗПЕЧНИЙ ЗАПУСК POLLING
         polling_started = await safe_start_polling(app)
