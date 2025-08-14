@@ -334,7 +334,11 @@ async def create_application():
         .build()
     )
     
-    logger.info(f"Application створено з HTTPXRequest налаштуваннями (pool_size={TELEGRAM_POOL_SIZE}, timeout={TELEGRAM_TIMEOUT})")
+    logger.info(f"✅ Application створено з HTTPXRequest налаштуваннями (pool_size={TELEGRAM_POOL_SIZE}, timeout={TELEGRAM_TIMEOUT})")
+    
+    # Перевіряємо що Updater буде створено після ініціалізації
+    logger.info(f"🔍 Application.updater до ініціалізації: {hasattr(application, 'updater')} ({getattr(application, 'updater', None)})")
+    
     return application
 
 def signal_handler(signum, frame):
@@ -2134,13 +2138,18 @@ async def safe_start_polling(app, max_retries=8):
             logger.info(f"🔄 Спроба запуску polling #{retry_count + 1}")
             
             # КРИТИЧНО ВАЖЛИВО: перевіряємо що application та updater готові
+            logger.info(f"🔍 Діагностика перед запуском polling:")
+            logger.info(f"  - app.updater: {getattr(app, 'updater', 'ВІДСУТНІЙ')}")
+            logger.info(f"  - app.bot._request: {getattr(app.bot, '_request', 'ВІДСУТНІЙ')}")
+            
             if not hasattr(app, 'updater') or not app.updater:
-                logger.error("❌ Updater не створено! Викличте app.initialize() спочатку")
-                raise RuntimeError("Application was not initialized via 'app.initialize()'!")
+                logger.error(f"❌ Updater не створено! app.updater = {getattr(app, 'updater', None)}")
+                logger.error(f"❌ Доступні атрибути app: {[attr for attr in dir(app) if not attr.startswith('_')]}")
+                raise RuntimeError("This Updater was not initialized via 'Updater.initialize'!")
                 
             if not hasattr(app.bot, '_request') or not app.bot._request:
-                logger.error("❌ HTTP request не ініціалізовано! Викличте app.initialize() спочатку")
-                raise RuntimeError("Application was not initialized via 'app.initialize()'!")
+                logger.error(f"❌ HTTP request не ініціалізовано! app.bot._request = {getattr(app.bot, '_request', None)}")
+                raise RuntimeError("This Updater was not initialized via 'Updater.initialize'!")
                 
             logger.info("✅ Application готовий для запуску polling")
             
@@ -2212,8 +2221,15 @@ async def graceful_shutdown(app):
         # Очищуємо HTTPXRequest
         if hasattr(app.bot, '_request') and app.bot._request:
             logger.info("🔄 Очищуємо HTTPXRequest...")
-            await app.bot._request.shutdown()
-            logger.info("✅ HTTPXRequest очищено")
+            try:
+                # Перевіряємо що це дійсно HTTPXRequest об'єкт з методом shutdown
+                if hasattr(app.bot._request, 'shutdown') and callable(getattr(app.bot._request, 'shutdown', None)):
+                    await app.bot._request.shutdown()
+                    logger.info("✅ HTTPXRequest очищено")
+                else:
+                    logger.warning("⚠️ HTTPXRequest не має методу shutdown, пропускаємо")
+            except Exception as req_error:
+                logger.error(f"❌ Помилка при очищенні HTTPXRequest: {req_error}")
         
     except Exception as e:
         logger.error(f"❌ Помилка при graceful shutdown: {e}")
@@ -2294,13 +2310,19 @@ async def main():
                     
                 await asyncio.sleep(2)  # Пауза перед наступною спробою
         
-        # Перевірка ініціалізації
-        if not app.updater:
-            logger.error("❌ Updater не створено!")
+        # Перевірка ініціалізації з діагностикою
+        logger.info(f"🔍 Діагностика після ініціалізації:")
+        logger.info(f"  - app.updater: {getattr(app, 'updater', 'ВІДСУТНІЙ')}")
+        logger.info(f"  - hasattr(app, 'updater'): {hasattr(app, 'updater')}")
+        logger.info(f"  - app.bot._request: {getattr(app.bot, '_request', 'ВІДСУТНІЙ')}")
+        
+        if not hasattr(app, 'updater') or not app.updater:
+            logger.error(f"❌ Updater не створено! app.updater = {getattr(app, 'updater', None)}")
+            logger.error(f"❌ Доступні атрибути app: {[attr for attr in dir(app) if not attr.startswith('_')]}")
             return
             
         if not hasattr(app.bot, '_request') or not app.bot._request:
-            logger.error("❌ HTTP request не ініціалізовано!")
+            logger.error(f"❌ HTTP request не ініціалізовано! app.bot._request = {getattr(app.bot, '_request', None)}")
             return
             
         logger.info("✅ Перевірка ініціалізації пройшла успішно")
@@ -2360,11 +2382,31 @@ async def main():
                         error_count += 1
                         logger.error(f"❌ Помилка у головному циклі: {e} ({error_count}/{max_errors})")
                         
+                        # КРИТИЧНО: Для помилок ініціалізації - пересоздаємо Application
+                        if "not initialized" in error_msg or "shutdown" in error_msg:
+                            logger.warning("🔄 Критична помилка Application, пересоздаємо...")
+                            try:
+                                await graceful_shutdown(app)
+                                app = await create_application()
+                                
+                                # Повна реініціалізація
+                                await app.initialize()
+                                add_handlers(app)
+                                await app.start()
+                                await asyncio.sleep(2)
+                                
+                                logger.info("✅ Application пересоздано та ініціалізовано")
+                                error_count = 0  # Скидаємо лічільник після успішного пересоздання
+                                continue
+                                
+                            except Exception as recreate_error:
+                                logger.error(f"❌ Помилка пересоздання Application: {recreate_error}")
+                        
                         if error_count >= max_errors:
                             logger.error("❌ Забагато помилок, завершуємо роботу")
                             break
                         
-                        await asyncio.sleep(10)
+                        await asyncio.sleep(15)  # Збільшено час очікування після помилок
         else:
             logger.error("❌ Не вдалося запустити polling")
             
