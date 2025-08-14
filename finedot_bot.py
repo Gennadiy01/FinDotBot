@@ -2462,19 +2462,44 @@ async def main():
                         if "not initialized" in error_msg or "shutdown" in error_msg:
                             logger.warning("🔄 Критична помилка Application, пересоздаємо...")
                             try:
+                                # Спочатку graceful shutdown старого app
                                 await graceful_shutdown(app)
+                                
+                                # Створюємо новий Application
                                 app = await create_application()
                                 
-                                # Повна реініціалізація
+                                # Повна реініціалізація з перевірками
                                 await app.initialize()
+                                
+                                # Перевірка після ініціалізації
+                                if not hasattr(app, 'updater') or not app.updater:
+                                    logger.error("❌ Новий Application не має Updater!")
+                                    raise RuntimeError("Failed to create Application with Updater")
+                                    
+                                if not hasattr(app.bot, '_request') or not app.bot._request:
+                                    logger.error("❌ Новий Application не має HTTP request!")
+                                    raise RuntimeError("Failed to create Application with HTTP request")
+                                
+                                # Додаємо handlers та запускаємо
                                 add_handlers(app)
                                 await app.start()
                                 await asyncio.sleep(2)
                                 
-                                logger.info("✅ Application пересоздано та ініціалізовано")
-                                error_count = 0  # Скидаємо лічільник після успішного пересоздання
-                                continue
+                                # ВАЖЛИВО: Очищаємо webhook перед новим polling
+                                logger.info("🧹 Очищення webhook після пересоздання Application...")
+                                await clear_webhook_and_pending_updates(app.bot)
                                 
+                                # Запускаємо polling на новому Application
+                                logger.info("🔄 Запуск polling на пересозданому Application...")
+                                polling_restarted = await safe_start_polling(app)
+                                
+                                if polling_restarted:
+                                    logger.info("✅ Application пересоздано та polling перезапущено")
+                                    error_count = 0  # Скидаємо лічільник після успішного пересоздання
+                                    continue
+                                else:
+                                    logger.error("❌ Не вдалося запустити polling на пересозданому Application")
+                                    
                             except Exception as recreate_error:
                                 logger.error(f"❌ Помилка пересоздання Application: {recreate_error}")
                         
