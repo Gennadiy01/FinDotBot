@@ -2137,7 +2137,11 @@ async def safe_start_polling(app, max_retries=5):
         try:
             logger.info(f"🔄 Спроба запуску polling #{retry_count + 1}")
             
-            # Базова перевірка готовності
+            # Перевірка готовності Application та Updater
+            if not app._initialized:
+                logger.error(f"❌ Application не ініціалізовано! app._initialized = {app._initialized}")
+                raise RuntimeError("This Application was not initialized via 'Application.initialize'!")
+                
             if not hasattr(app, 'updater') or not app.updater:
                 logger.error(f"❌ Updater не готовий! app.updater = {getattr(app, 'updater', None)}")
                 raise RuntimeError("This Updater was not initialized via 'Updater.initialize'!")
@@ -2159,6 +2163,18 @@ async def safe_start_polling(app, max_retries=5):
         except Exception as e:
             retry_count += 1
             error_msg = str(e).lower()
+            
+            # Обробка NetworkError (Bad Gateway)
+            if "bad gateway" in error_msg or "networkerror" in error_msg:
+                if retry_count < max_retries:
+                    wait_time = 15 * retry_count  # 15, 30, 45, 60 сек
+                    logger.warning(f"⚠️ Network Error / Bad Gateway (спроба {retry_count}/{max_retries})")
+                    logger.info(f"⏳ Очікуємо {wait_time} секунд перед повторною спробою...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"❌ Не вдалося подолати Network Error після {max_retries} спроб")
+                    raise
             
             if "conflict" in error_msg and retry_count < max_retries:
                 wait_time = 30 * retry_count  # 30, 60, 90, 120 сек
@@ -2292,10 +2308,15 @@ async def main():
         
         # Перевірка ініціалізації з діагностикою
         logger.info(f"🔍 Діагностика після ініціалізації:")
+        logger.info(f"  - app._initialized: {getattr(app, '_initialized', 'ВІДСУТНІЙ')}")
         logger.info(f"  - app.updater: {getattr(app, 'updater', 'ВІДСУТНІЙ')}")
         logger.info(f"  - hasattr(app, 'updater'): {hasattr(app, 'updater')}")
         logger.info(f"  - app.bot._request: {getattr(app.bot, '_request', 'ВІДСУТНІЙ')}")
         
+        if not getattr(app, '_initialized', False):
+            logger.error(f"❌ Application не ініціалізовано! app._initialized = {getattr(app, '_initialized', None)}")
+            return
+            
         if not hasattr(app, 'updater') or not app.updater:
             logger.error(f"❌ Updater не створено! app.updater = {getattr(app, 'updater', None)}")
             logger.error(f"❌ Доступні атрибути app: {[attr for attr in dir(app) if not attr.startswith('_')]}")
